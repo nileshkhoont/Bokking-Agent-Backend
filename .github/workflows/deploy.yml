@@ -1,0 +1,22 @@
+name: Backend Deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ["backend/**"]
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: docker build -t ai-calling-agent-backend:${{ github.sha }} .
+      # Deployment target (registry push, SSH, platform CLI, etc.) is intentionally not filled
+      # in — no deployment target/credentials were provided as part of this project's scope.

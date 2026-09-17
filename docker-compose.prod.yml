@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    image: ai-calling-agent-backend:latest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file: .env
+    deploy:
+      replicas: 2
+
+  celery_worker:
+    build: .
+    image: ai-calling-agent-backend:latest
+    command: celery -A app.workers.celery_app worker -l info --concurrency=4
+    restart: unless-stopped
+    env_file: .env
+
+  celery_beat:
+    build: .
+    image: ai-calling-agent-backend:latest
+    command: celery -A app.workers.celery_app beat -l info
+    restart: unless-stopped
+    env_file: .env
+
+# mongo/redis are expected to be managed services (Atlas / Elasticache-equivalent) in production,
+# not containers in this compose file — point MONGODB_URI / REDIS_URL in .env at them.
