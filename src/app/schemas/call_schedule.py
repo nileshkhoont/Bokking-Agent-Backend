@@ -20,6 +20,8 @@ class CallScheduleCreate(BaseModel):
 class CallScheduleOut(BaseModel):
     id: str
     person_id: str
+    person_full_name: str | None = None
+    person_phone_number: str | None = None
     appointment_id: str | None = None
     scheduled_at: datetime
     call_purpose: CallPurpose

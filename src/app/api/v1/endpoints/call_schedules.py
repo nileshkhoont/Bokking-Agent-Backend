@@ -5,7 +5,9 @@ from app.core.constants import CallPurpose, CallScheduleStatus
 from app.core.exceptions import NotFoundError
 from app.models.admin import Admin
 from app.models.call_schedule import CallSchedule
+from app.models.person import Person
 from app.repositories.call_schedule_repository import call_schedule_repository
+from app.repositories.person_repository import person_repository
 from app.schemas.call_schedule import CallScheduleCreate, CallScheduleOut
 from app.schemas.common import Page, PageParams
 from app.services.call_schedule_service import call_schedule_service
@@ -14,10 +16,12 @@ from app.utils.pagination import build_page
 router = APIRouter(prefix="/call-schedules", tags=["call_schedules"])
 
 
-def _to_out(schedule: CallSchedule) -> CallScheduleOut:
+def _to_out(schedule: CallSchedule, person: Person | None = None) -> CallScheduleOut:
     return CallScheduleOut(
         id=str(schedule.id),
         person_id=schedule.person_id,
+        person_full_name=person.full_name if person else None,
+        person_phone_number=person.phone_number if person else None,
         appointment_id=schedule.appointment_id,
         scheduled_at=schedule.scheduled_at,
         call_purpose=schedule.call_purpose,
@@ -43,7 +47,8 @@ async def list_call_schedules(
 ) -> Page[CallScheduleOut]:
     """The outbound calling queue view (pending/completed/missed) — PDF §3."""
     items, total = await call_schedule_repository.list_filtered(page, status=status, call_purpose=call_purpose)
-    return build_page([_to_out(s) for s in items], total, page)
+    persons = await person_repository.get_many_by_ids({s.person_id for s in items})
+    return build_page([_to_out(s, persons.get(s.person_id)) for s in items], total, page)
 
 
 @router.get("/{schedule_id}", response_model=CallScheduleOut)

@@ -1,3 +1,4 @@
+from beanie import PydanticObjectId
 
 from app.models.person import Person
 from app.schemas.common import PageParams
@@ -9,6 +10,16 @@ class PersonRepository:
         if person is None or person.is_deleted:
             return None
         return person
+
+    async def get_many_by_ids(self, person_ids: set[str]) -> dict[str, Person]:
+        """Batch lookup for list endpoints (calls/appointments/call-schedules) that need to show
+        the person's name/phone next to each row without an N+1 query per row.
+        """
+        if not person_ids:
+            return {}
+        object_ids = [PydanticObjectId(pid) for pid in person_ids]
+        persons = await Person.find({"_id": {"$in": object_ids}}).to_list()
+        return {str(p.id): p for p in persons}
 
     async def get_by_phone(self, phone_number: str) -> Person | None:
         return await Person.find_one(

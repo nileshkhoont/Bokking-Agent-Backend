@@ -18,6 +18,8 @@ class CallOut(BaseModel):
     id: str
     call_schedule_id: str | None = None
     person_id: str
+    person_full_name: str | None = None
+    person_phone_number: str | None = None
     appointment_id: str | None = None
     call_type: CallType
     direction: Direction
