@@ -66,6 +66,11 @@ class EdesyPlaceCallRequest(BaseModel):
     agentId: str
     phoneNumber: str
     context: dict[str, Any] = {}
+    # Dashboard-level {{variable}} prompt substitution (Agent Instructions -> Variables). Field
+    # name "variables" is inferred from the dashboard's own terminology, not confirmed against
+    # real Edesy/Vani API docs — see prompts/call_variables.py's module docstring. `context` above
+    # is kept too since it was already being sent before this was added.
+    variables: dict[str, Any] = {}
     callbackUrl: str | None = None
     idempotencyKey: str | None = None
 

@@ -138,7 +138,12 @@ async def reschedule_appointment(payload: RescheduleAppointmentRequest) -> ToolR
 class LogCallbackRequest(BaseModel):
     person_id: str
     requested_datetime: datetime
-    source_call_id: str  # our internal calls._id for the call this was requested during
+    # Optional — the agent has no way to know our internal calls._id mid-conversation (that
+    # document doesn't exist until the call.ended webhook arrives, after the call is already
+    # over; see integrations/edesy/webhook_events.py). Was required before 2026-09-17, which made
+    # this tool impossible for the agent to ever call successfully — kept here only in case Vani
+    # exposes its own call reference to the agent, purely informational if provided.
+    source_call_id: str | None = None
     appointment_id: str | None = None
 
 

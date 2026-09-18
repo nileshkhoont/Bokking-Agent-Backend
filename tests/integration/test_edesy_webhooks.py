@@ -1,13 +1,11 @@
-"""Signature verification + event-handling tests for the Edesy webhook receiver.
+"""Signature verification + event-handling tests for the Vani/Edesy webhook receiver.
 
-Edesy itself can't be exercised without real credentials (none were provided as part of this
-project) — these tests build payloads shaped exactly like Edesy's documented webhook format and
-sign them with the same HMAC-SHA256 scheme core.webhook_security verifies, rather than mocking
-Edesy's API as if it had actually been called.
+The payload shape used below matches a REAL captured `call.ended` webhook (2026-09-17) — nested
+`call`/`agent`/`outcome` objects, `speaker`/`text` transcript turns — not a guessed shape. See
+integrations/edesy/webhook_events.py's module docstring for the full context on why this replaced
+an earlier, entirely-wrong flat-shape assumption that caused every real webhook to be rejected.
 """
 
-import hashlib
-import hmac
 import json
 from datetime import UTC, datetime
 
@@ -20,52 +18,81 @@ from app.models.call_schedule import CallSchedule
 from app.models.person import Person
 
 
-def _sign(body: bytes) -> str:
-    return hmac.new(settings.edesy_webhook_secret.encode(), body, hashlib.sha256).hexdigest()
-
-
 async def _post_webhook(client: AsyncClient, payload: dict, sign: bool = True):
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if sign:
-        headers["X-Webhook-Signature"] = _sign(body)
+        headers["Authorization"] = f"Bearer {settings.edesy_webhook_secret}"
     return await client.post("/api/v1/webhooks/edesy", content=body, headers=headers)
+
+
+def _call_ended_payload(
+    call_sid: str,
+    phone: str,
+    status: str = "completed",
+    disposition: str | None = "CALLBACK_SCHEDULED",
+    end_reason: str = "USER_REQUEST",
+    direction: str = "inbound",
+) -> dict:
+    return {
+        "event": "call.ended",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "call": {
+            "id": "abc123",
+            "callSid": call_sid,
+            "direction": direction,
+            "from": phone,
+            "to": "",
+            "duration": 35,
+            "turnCount": 4,
+            "provider": "plivo",
+            "llmMode": "gemini-live-3.1",
+        },
+        "agent": {"id": 47094},
+        "outcome": {
+            "status": status,
+            "disposition": disposition,
+            "confidence": 1,
+            "endReason": end_reason,
+            "endedBy": "agent",
+        },
+        "data": {},
+        "transcript": [
+            {"speaker": "agent", "text": "Hello!", "timestamp": datetime.now(UTC).isoformat()},
+            {"speaker": "user", "text": "Call me back in 5 minutes.", "timestamp": datetime.now(UTC).isoformat()},
+        ],
+    }
 
 
 @pytest.mark.asyncio
 async def test_webhook_rejects_missing_signature(client: AsyncClient):
-    response = await _post_webhook(client, {"event": "call.started"}, sign=False)
+    response = await _post_webhook(client, {"event": "call.ended"}, sign=False)
     assert response.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_webhook_rejects_invalid_signature(client: AsyncClient):
-    body = json.dumps({"event": "call.started"}).encode()
+    body = json.dumps({"event": "call.ended"}).encode()
     response = await client.post(
         "/api/v1/webhooks/edesy",
         content=body,
-        headers={"X-Webhook-Signature": "not-the-right-signature", "Content-Type": "application/json"},
+        headers={"Authorization": "Bearer not-the-right-secret", "Content-Type": "application/json"},
     )
     assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_call_started_inbound_creates_person_and_call(client: AsyncClient):
-    payload = {
-        "event": "call.started",
-        "callId": "edesy-call-1",
-        "agentId": "agent-1",
-        "phoneNumber": "+15551234567",
-        "direction": "inbound",
-        "startedAt": datetime.now(UTC).isoformat(),
-        "context": {},
-    }
+async def test_call_ended_inbound_creates_person_and_call(client: AsyncClient):
+    payload = _call_ended_payload(call_sid="sid-inbound-1", phone="+15551234567")
     response = await _post_webhook(client, payload)
     assert response.status_code == 200
 
-    call = await Call.find_one(Call.edesy_call_id == "edesy-call-1")
+    call = await Call.find_one(Call.edesy_call_id == "sid-inbound-1")
     assert call is not None
     assert call.call_type == "inbound"
+    assert call.call_status == "answered"  # outcome.status == "completed"
+    assert call.outcome == "callback_requested"  # disposition CALLBACK_SCHEDULED
+    assert "Call me back in 5 minutes" in call.transcript
 
     person = await Person.find_one(Person.phone_number == "+15551234567")
     assert person is not None
@@ -73,45 +100,7 @@ async def test_call_started_inbound_creates_person_and_call(client: AsyncClient)
 
 
 @pytest.mark.asyncio
-async def test_call_ended_stores_transcript_and_recording(client: AsyncClient):
-    started_payload = {
-        "event": "call.started",
-        "callId": "edesy-call-2",
-        "agentId": "agent-1",
-        "phoneNumber": "+15559876543",
-        "direction": "inbound",
-        "startedAt": datetime.now(UTC).isoformat(),
-        "context": {},
-    }
-    await _post_webhook(client, started_payload)
-
-    ended_payload = {
-        "event": "call.ended",
-        "callId": "edesy-call-2",
-        "agentId": "agent-1",
-        "endedAt": datetime.now(UTC).isoformat(),
-        "durationSeconds": 120,
-        "transcript": {
-            "summary": "Booked an appointment for next week.",
-            "turns": [
-                {"role": "agent", "content": "Hello!"},
-                {"role": "person", "content": "Hi, I'd like to book an appointment."},
-            ],
-        },
-        "recordingUrl": "https://recordings.edesy.in/edesy-call-2.mp3",
-    }
-    response = await _post_webhook(client, ended_payload)
-    assert response.status_code == 200
-
-    call = await Call.find_one(Call.edesy_call_id == "edesy-call-2")
-    assert call.duration_seconds == 120
-    assert call.transcript_summary == "Booked an appointment for next week."
-    assert "Hello!" in call.transcript
-    assert call.recording_url.endswith(".mp3")
-
-
-@pytest.mark.asyncio
-async def test_call_failed_triggers_missed_call_retry(client: AsyncClient):
+async def test_call_ended_for_outbound_schedule_marks_completed(client: AsyncClient):
     schedule = CallSchedule(
         person_id="person-x",
         scheduled_at=datetime.now(UTC),
@@ -120,29 +109,49 @@ async def test_call_failed_triggers_missed_call_retry(client: AsyncClient):
         status="in_progress",
         attempt_number=1,
         max_attempts=3,
+        edesy_call_id="sid-outbound-1",
     )
     await schedule.insert()
 
-    started_payload = {
-        "event": "call.started",
-        "callId": "edesy-call-3",
-        "agentId": "agent-1",
-        "phoneNumber": "+15550001111",
-        "direction": "outbound",
-        "startedAt": datetime.now(UTC).isoformat(),
-        "context": {"call_schedule_id": str(schedule.id)},
-    }
-    await _post_webhook(client, started_payload)
-
-    failed_payload = {
-        "event": "call.failed",
-        "callId": "edesy-call-3",
-        "agentId": "agent-1",
-        "failureReason": "no-answer",
-        "failedAt": datetime.now(UTC).isoformat(),
-    }
-    response = await _post_webhook(client, failed_payload)
+    payload = _call_ended_payload(call_sid="sid-outbound-1", phone="+15559876543", direction="outbound")
+    response = await _post_webhook(client, payload)
     assert response.status_code == 200
+
+    call = await Call.find_one(Call.edesy_call_id == "sid-outbound-1")
+    assert call.call_schedule_id == str(schedule.id)
+    assert call.call_type == "outbound_admin_scheduled"
+
+    updated_schedule = await CallSchedule.get(schedule.id)
+    assert updated_schedule.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_call_ended_failure_triggers_missed_call_retry(client: AsyncClient):
+    schedule = CallSchedule(
+        person_id="person-y",
+        scheduled_at=datetime.now(UTC),
+        call_purpose="admin_scheduled",
+        requested_by="admin",
+        status="in_progress",
+        attempt_number=1,
+        max_attempts=3,
+        edesy_call_id="sid-outbound-2",
+    )
+    await schedule.insert()
+
+    payload = _call_ended_payload(
+        call_sid="sid-outbound-2",
+        phone="+15550001111",
+        direction="outbound",
+        status="no-answer",
+        disposition=None,
+        end_reason="NO_ANSWER",
+    )
+    response = await _post_webhook(client, payload)
+    assert response.status_code == 200
+
+    call = await Call.find_one(Call.edesy_call_id == "sid-outbound-2")
+    assert call.call_status == "no_answer"
 
     original = await CallSchedule.get(schedule.id)
     assert original.status == "missed"
@@ -151,3 +160,38 @@ async def test_call_failed_triggers_missed_call_retry(client: AsyncClient):
     assert retry is not None
     assert retry.attempt_number == 2
     assert retry.call_purpose == "missed_call_retry"
+
+
+@pytest.mark.asyncio
+async def test_webhook_ignores_unrecognized_event_gracefully(client: AsyncClient):
+    """An event name we don't recognize must not 400 — Vani's dashboard would show that as a
+    failed delivery, and this is an undocumented API where the shape can change again.
+    """
+    response = await _post_webhook(client, {"event": "something.new", "data": {}})
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_handles_malformed_call_ended_gracefully(client: AsyncClient):
+    """Missing the one required field (call.callSid) must not 500/400 — logged and accepted."""
+    response = await _post_webhook(client, {"event": "call.ended", "call": {"from": "+15551112222"}})
+    assert response.status_code == 200
+    count = await Call.find(Call.person_id != None).count()  # noqa: E711
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_call_ended_updates_existing_call_record(client: AsyncClient):
+    """A second call.ended for the same callSid (e.g. a retried delivery) updates in place rather
+    than creating a duplicate.
+    """
+    payload = _call_ended_payload(call_sid="sid-dup-1", phone="+15553334444", status="completed")
+    await _post_webhook(client, payload)
+
+    payload["transcript"].append({"speaker": "agent", "text": "Extra turn", "timestamp": datetime.now(UTC).isoformat()})
+    response = await _post_webhook(client, payload)
+    assert response.status_code == 200
+
+    matching = await Call.find(Call.edesy_call_id == "sid-dup-1").to_list()
+    assert len(matching) == 1
+    assert "Extra turn" in matching[0].transcript

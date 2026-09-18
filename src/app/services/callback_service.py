@@ -18,7 +18,7 @@ class CallbackService:
         self,
         person_id: str,
         requested_datetime: datetime,
-        source_call_id: str,
+        source_call_id: str | None = None,
         appointment_id: str | None = None,
     ) -> CallSchedule:
         requested_datetime = ensure_utc(requested_datetime)

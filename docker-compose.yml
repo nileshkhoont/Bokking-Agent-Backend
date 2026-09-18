@@ -25,17 +25,24 @@ services:
       - mongo
       - redis
 
+  # celery_worker/celery_beat point at MONGODB_URI=host.docker.internal instead of the `mongo`
+  # service above — for local dev where the real data lives in MongoDB running directly on the
+  # host (not the `mongo` container, which is a separate, empty database). Run with:
+  #   docker compose up -d --build redis celery_worker celery_beat flower
+  # (deliberately not `docker compose up -d` alone, which would also start `api` and the empty
+  # `mongo` container).
   celery_worker:
     build: .
     command: celery -A app.workers.celery_app worker -l info
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_URI: mongodb://host.docker.internal:27017
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      - mongo
       - redis
 
   celery_beat:
@@ -43,12 +50,26 @@ services:
     command: celery -A app.workers.celery_app beat -l info
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_URI: mongodb://host.docker.internal:27017
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      - mongo
+      - redis
+
+  # Queue dashboard — http://localhost:5555. Only needs the Redis broker, no MongoDB access.
+  flower:
+    build: .
+    command: celery -A app.workers.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
       - redis
 
 volumes:

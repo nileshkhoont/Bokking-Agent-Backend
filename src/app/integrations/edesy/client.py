@@ -109,18 +109,20 @@ class EdesyClient:
         phone_number: str,
         context: dict,
         idempotency_key: str,
+        variables: dict | None = None,
         callback_url: str | None = None,
     ) -> EdesyPlaceCallResponse:
         payload = EdesyPlaceCallRequest(
             agentId=agent_id,
             phoneNumber=phone_number,
             context=context,
+            variables=variables or {},
             callbackUrl=callback_url,
             idempotencyKey=idempotency_key,
         )
-        response = await self._request(
-            "POST", "/api/v1/calls", json=payload.model_dump(), retryable=True
-        )
+        request_body = payload.model_dump()
+        logger.info("edesy_place_call_request", body=request_body)
+        response = await self._request("POST", "/api/v1/calls", json=request_body, retryable=True)
         body = response.json()
         logger.info("edesy_place_call_response", body=body)
         result = EdesyPlaceCallResponse.from_response_body(body)

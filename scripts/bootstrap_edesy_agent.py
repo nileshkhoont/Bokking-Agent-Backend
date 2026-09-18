@@ -88,7 +88,7 @@ FUNCTION_DEFINITIONS = [
         parameters=[
             EdesyFunctionParameter(name="person_id", type="string", description="Person id from identify_person"),
             EdesyFunctionParameter(name="requested_datetime", type="string", description="ISO-8601 datetime the caller wants to be called back"),
-            EdesyFunctionParameter(name="source_call_id", type="string", description="This call's internal id"),
+            EdesyFunctionParameter(name="source_call_id", type="string", description="This call's internal id, if known", required=False),
             EdesyFunctionParameter(name="appointment_id", type="string", description="Related appointment id, if any", required=False),
         ],
     ),
