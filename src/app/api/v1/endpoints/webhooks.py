@@ -1,11 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.core.constants import (
-    EDESY_EVENT_CALL_ENDED,
-    EDESY_EVENT_CALL_FAILED,
-    EDESY_EVENT_CALL_STARTED,
-    EDESY_EVENT_FUNCTION_CALLED,
-)
 from app.core.logging import get_logger
 from app.core.webhook_security import verify_edesy_signature, verify_static_header_secret
 from app.integrations.edesy.webhook_events import parse_webhook_event
@@ -18,10 +12,15 @@ logger = get_logger(__name__)
 
 @router.post("/edesy", response_model=Message)
 async def edesy_webhook(request: Request) -> Message:
-    """Receives Edesy's signed webhook subscription events (folder-structure doc §0 — this is the
-    retried, richer of Edesy's two webhook mechanisms; the one-off `callbackUrl` on a single
-    `POST /api/v1/calls` is NOT used here since it isn't retried on delivery failure, which matters
-    for the missed-call retry logic being reliable).
+    """Receives Vani/Edesy's webhook deliveries. Per the dashboard's own description ("After
+    every call ends"), there is exactly one real event — `call.ended`, fired once per call with
+    the full outcome + transcript (see integrations/edesy/webhook_events.py for how this was
+    confirmed against a real captured payload, and why the shape is nested rather than flat).
+
+    On anything we can't parse (unrecognized event name, or Vani changing the shape again), we
+    log the full payload and still return 200 — this is an undocumented third-party API, and a
+    shape drift here must show up in our own logs, not as a "delivery failed" state on Vani's
+    dashboard that could cause them to disable or back off the webhook.
     """
     raw_body = await request.body()
 
@@ -38,21 +37,16 @@ async def edesy_webhook(request: Request) -> Message:
         logger.warning("edesy_webhook_unauthorized")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook credentials")
 
-    payload = await request.json()
     try:
-        event = parse_webhook_event(payload)
-    except ValueError as exc:
-        logger.warning("edesy_webhook_unknown_event", payload=payload)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        payload = await request.json()
+    except ValueError:
+        logger.warning("edesy_webhook_invalid_json", body=raw_body[:2000])
+        return Message(detail="ok")
 
-    event_name = payload.get("event")
-    if event_name == EDESY_EVENT_CALL_STARTED:
-        await call_service.handle_call_started(event)  # type: ignore[arg-type]
-    elif event_name == EDESY_EVENT_CALL_ENDED:
-        await call_service.handle_call_ended(event)  # type: ignore[arg-type]
-    elif event_name == EDESY_EVENT_CALL_FAILED:
-        await call_service.handle_call_failed(event)  # type: ignore[arg-type]
-    elif event_name == EDESY_EVENT_FUNCTION_CALLED:
-        await call_service.record_function_call(event)  # type: ignore[arg-type]
+    event = parse_webhook_event(payload)
+    if event is None:
+        # Already logged (with the full payload) inside parse_webhook_event.
+        return Message(detail="ok")
 
+    await call_service.handle_call_ended(event)
     return Message(detail="ok")

@@ -44,20 +44,6 @@ def is_same_calendar_day(a: datetime, b: datetime) -> bool:
     return a.date() == b.date()
 
 
-def align_to_slot_boundary(local_dt: datetime, day_start: time, slot_duration_minutes: int) -> bool:
-    """True if local_dt falls exactly on a slot boundary starting from day_start, given the
-    configured slot duration — e.g. 09:00 + 30-min slots => 09:00, 09:30, 10:00 are valid;
-    09:10 is not.
-    """
-    day_start_dt = local_dt.replace(
-        hour=day_start.hour, minute=day_start.minute, second=0, microsecond=0
-    )
-    if local_dt < day_start_dt:
-        return False
-    delta_minutes = (local_dt - day_start_dt).total_seconds() / 60
-    return delta_minutes % slot_duration_minutes == 0
-
-
 def add_minutes(value: datetime, minutes: int) -> datetime:
     return value + timedelta(minutes=minutes)
 
@@ -69,3 +55,11 @@ def format_ist_human(value: datetime) -> str:
     """
     ist = ensure_utc(value).astimezone(BUSINESS_TIMEZONE)
     return ist.strftime("%A, %d %B %Y, %I:%M %p IST").replace(" 0", " ")
+
+
+def format_ist_time(value: datetime) -> str:
+    """Time-only IST rendering (e.g. "10:00 AM") — for reading out a list of same-day slot
+    options, where repeating the full date for every option would be tedious to listen to.
+    """
+    ist = ensure_utc(value).astimezone(BUSINESS_TIMEZONE)
+    return ist.strftime("%I:%M %p").lstrip("0")

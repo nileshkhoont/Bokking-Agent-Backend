@@ -1,6 +1,5 @@
 from datetime import datetime
 
-from app.core.config import settings
 from app.core.constants import ActorType, AuditAction, CallPurpose, CallScheduleStatus, RequestedBy
 from app.core.exceptions import OutsideBusinessHoursError
 from app.models.call_schedule import CallSchedule
@@ -18,7 +17,7 @@ class CallbackService:
         self,
         person_id: str,
         requested_datetime: datetime,
-        source_call_id: str,
+        source_call_id: str | None = None,
         appointment_id: str | None = None,
     ) -> CallSchedule:
         requested_datetime = ensure_utc(requested_datetime)
@@ -34,8 +33,6 @@ class CallbackService:
             requested_by=RequestedBy.person,
             source_call_id=source_call_id,
             status=CallScheduleStatus.pending,
-            attempt_number=1,
-            max_attempts=settings.default_max_call_attempts,
             created_by=None,
         )
         await schedule.insert()

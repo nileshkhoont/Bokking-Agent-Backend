@@ -10,8 +10,9 @@ branch to take, and no other tool covers that — so it's a necessary part of th
 architecture, not an invented feature.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
+from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -23,7 +24,7 @@ from app.schemas.call import ToolResponse
 from app.services.appointment_service import appointment_service
 from app.services.callback_service import callback_service
 from app.services.slot_service import slot_service
-from app.utils.datetime_utils import format_ist_human
+from app.utils.datetime_utils import format_ist_human, format_ist_time
 
 router = APIRouter(
     prefix="/agent-tools", tags=["agent_tools"], dependencies=[Depends(require_tool_secret)]
@@ -78,17 +79,53 @@ async def check_slot_availability(payload: CheckSlotRequest) -> ToolResponse:
     )
 
 
+class ListAvailableSlotsRequest(BaseModel):
+    date: date  # "2026-09-22" — the calendar date the caller is interested in
+
+
+@router.post("/list-available-slots", response_model=ToolResponse)
+async def list_available_slots(payload: ListAvailableSlotsRequest) -> ToolResponse:
+    """Every real, currently-open slot on a given date — generated from business_config and
+    filtered against actual bookings, live. Use this to offer the caller real alternative times
+    (e.g. when their first preference is unavailable) instead of guessing — never state a time is
+    open without it appearing in this list or having just passed check_slot_availability.
+    """
+    slots = await slot_service.list_available_slots(payload.date)
+    return ToolResponse(
+        success=True,
+        data={
+            "date": payload.date.isoformat(),
+            "count": len(slots),
+            "slots": [
+                {"datetime": s.isoformat(), "time_ist": format_ist_time(s)} for s in slots
+            ],
+        },
+    )
+
+
 class BookAppointmentRequest(BaseModel):
-    person_id: str
+    # Resolved server-side from Edesy's own call-context variable ({{call.phone_number}}), not
+    # taken as an LLM-supplied parameter — a model can and does mis-remember/hallucinate an
+    # opaque person_id across turns (observed 2026-09-21: a call booked with person_id="none"
+    # because the agent's prompt never called identify_person). The phone number is the one
+    # value Edesy resolves live from the call itself, so resolving the Person from it here
+    # guarantees every appointment has a real person_id regardless of what the prompt does.
+    phone_number: str
     requested_datetime: datetime
     call_id: str | None = None  # our internal calls._id for this in-progress call
+    # If the caller states/confirms their name during this call (e.g. a call that was scheduled
+    # with only a phone number), pass it here so it actually reaches the Person record — the
+    # same update-if-different logic identify_person already uses. Optional: omitted or None
+    # leaves the existing name untouched.
+    full_name: str | None = None
 
 
 @router.post("/book-appointment", response_model=ToolResponse)
 async def book_appointment(payload: BookAppointmentRequest) -> ToolResponse:
+    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
     try:
         appointment = await appointment_service.book_first_time(
-            person_id=payload.person_id,
+            person_id=str(person.id),
             appointment_datetime=payload.requested_datetime,
             booking_source=BookingSource.inbound_call,
             created_by_call_id=payload.call_id,
@@ -108,16 +145,32 @@ async def book_appointment(payload: BookAppointmentRequest) -> ToolResponse:
 
 
 class RescheduleAppointmentRequest(BaseModel):
-    appointment_id: str
+    # Same reasoning as BookAppointmentRequest.phone_number — resolved from Edesy's call context,
+    # not trusted from the LLM. appointment_id is still accepted (from identify_person's result,
+    # if the prompt calls it) but is optional: if missing or stale, we fall back to the person's
+    # current active appointment looked up server-side, so a reschedule still succeeds correctly
+    # even when the model never captured a valid appointment_id.
+    phone_number: str
     new_appointment_datetime: datetime
+    appointment_id: str | None = None
     call_id: str | None = None
+    full_name: str | None = None  # same reasoning as BookAppointmentRequest.full_name
 
 
 @router.post("/reschedule-appointment", response_model=ToolResponse)
 async def reschedule_appointment(payload: RescheduleAppointmentRequest) -> ToolResponse:
+    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
+
+    appointment_id = payload.appointment_id
+    if not appointment_id or not PydanticObjectId.is_valid(appointment_id):
+        active = await appointment_service.get_active_for_person(str(person.id))
+        if active is None:
+            return ToolResponse(success=False, message="No active appointment found to reschedule")
+        appointment_id = str(active.id)
+
     try:
         appointment = await appointment_service.reschedule_existing(
-            appointment_id=payload.appointment_id,
+            appointment_id=appointment_id,
             new_appointment_datetime=payload.new_appointment_datetime,
             created_by_call_id=payload.call_id,
         )
@@ -136,17 +189,26 @@ async def reschedule_appointment(payload: RescheduleAppointmentRequest) -> ToolR
 
 
 class LogCallbackRequest(BaseModel):
-    person_id: str
+    # Same reasoning as BookAppointmentRequest.phone_number — resolved from Edesy's call context,
+    # not trusted from the LLM.
+    phone_number: str
     requested_datetime: datetime
-    source_call_id: str  # our internal calls._id for the call this was requested during
+    # Optional — the agent has no way to know our internal calls._id mid-conversation (that
+    # document doesn't exist until the call.ended webhook arrives, after the call is already
+    # over; see integrations/edesy/webhook_events.py). Was required before 2026-09-17, which made
+    # this tool impossible for the agent to ever call successfully — kept here only in case Vani
+    # exposes its own call reference to the agent, purely informational if provided.
+    source_call_id: str | None = None
     appointment_id: str | None = None
+    full_name: str | None = None  # same reasoning as BookAppointmentRequest.full_name
 
 
 @router.post("/log-callback-request", response_model=ToolResponse)
 async def log_callback_request(payload: LogCallbackRequest) -> ToolResponse:
+    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
     try:
         schedule = await callback_service.create_callback(
-            person_id=payload.person_id,
+            person_id=str(person.id),
             requested_datetime=payload.requested_datetime,
             source_call_id=payload.source_call_id,
             appointment_id=payload.appointment_id,

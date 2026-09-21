@@ -31,11 +31,16 @@ Open http://localhost:5000/docs for the interactive API docs.
 
 ## Wiring up Edesy (once real credentials exist)
 
+The agent, its prompt/greeting, and its Custom Functions are all created and edited directly in
+the Edesy dashboard — not from this codebase.
+
 1. Set `EDESY_API_KEY` in `.env`.
 2. Set `PUBLIC_BASE_URL` to this backend's publicly reachable HTTPS URL (Edesy's servers call
    `agent_tools`/`webhooks` from outside your network — `localhost` will not work here).
-3. `python scripts/bootstrap_edesy_agent.py` — registers the agent + its tools, prints an
-   `agentId`. Copy it into `EDESY_AGENT_ID` in `.env`.
+3. In the Edesy dashboard, create the agent and register each of the 5
+   `api/v1/endpoints/agent_tools.py` endpoints as a Custom Function (`POST
+   {PUBLIC_BASE_URL}/api/v1/agent-tools/<name>`, header `X-Tool-Secret: <AGENT_TOOL_SECRET>`).
+   Copy the agent's id into `EDESY_AGENT_ID` in `.env`.
 4. In the Edesy dashboard, configure a **signed webhook subscription** (not the one-off
    `callbackUrl`) pointing at `POST {PUBLIC_BASE_URL}/api/v1/webhooks/edesy`, using
    `EDESY_WEBHOOK_SECRET`.

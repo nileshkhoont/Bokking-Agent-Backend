@@ -5,7 +5,9 @@ from app.core.constants import ActorType, AppointmentStatus, AuditAction
 from app.core.exceptions import NotFoundError
 from app.models.admin import Admin
 from app.models.appointment import Appointment
+from app.models.person import Person
 from app.repositories.appointment_repository import appointment_repository
+from app.repositories.person_repository import person_repository
 from app.schemas.appointment import (
     AppointmentCancel,
     AppointmentCreate,
@@ -23,10 +25,12 @@ from app.utils.pagination import build_page
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
 
-def _to_out(appointment: Appointment) -> AppointmentOut:
+def _to_out(appointment: Appointment, person: Person | None = None) -> AppointmentOut:
     return AppointmentOut(
         id=str(appointment.id),
         person_id=appointment.person_id,
+        person_full_name=person.full_name if person else None,
+        person_phone_number=person.phone_number if person else None,
         appointment_datetime=appointment.appointment_datetime,
         duration_minutes=appointment.duration_minutes,
         status=appointment.status,
@@ -46,7 +50,8 @@ async def list_appointments(
     _: Admin = Depends(get_current_admin),
 ) -> Page[AppointmentOut]:
     items, total = await appointment_repository.list_filtered(page, status=status)
-    return build_page([_to_out(a) for a in items], total, page)
+    persons = await person_repository.get_many_by_ids({a.person_id for a in items})
+    return build_page([_to_out(a, persons.get(a.person_id)) for a in items], total, page)
 
 
 @router.get("/for-person/{person_id}", response_model=list[AppointmentOut])

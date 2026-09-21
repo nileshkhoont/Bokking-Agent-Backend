@@ -27,6 +27,8 @@ class AppointmentCancel(BaseModel):
 class AppointmentOut(BaseModel):
     id: str
     person_id: str
+    person_full_name: str | None = None
+    person_phone_number: str | None = None
     appointment_datetime: datetime
     duration_minutes: int | None = None
     status: AppointmentStatus

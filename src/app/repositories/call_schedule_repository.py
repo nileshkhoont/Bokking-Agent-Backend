@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from beanie import PydanticObjectId
+
 from app.core.constants import CallPurpose, CallScheduleStatus
 from app.models.call_schedule import CallSchedule
 from app.schemas.common import PageParams
@@ -7,10 +9,22 @@ from app.schemas.common import PageParams
 
 class CallScheduleRepository:
     async def get_by_id(self, schedule_id: str) -> CallSchedule | None:
+        if not PydanticObjectId.is_valid(schedule_id):
+            return None
         schedule = await CallSchedule.get(schedule_id)
         if schedule is None or schedule.is_deleted:
             return None
         return schedule
+
+    async def get_by_edesy_call_id(self, edesy_call_id: str) -> CallSchedule | None:
+        """Correlates an incoming call.ended webhook (call.callSid) back to the call_schedules
+        row that dispatched it — edesy_call_id is set on the schedule at dispatch time
+        (workers/tasks/outbound_call_task.py), independently of whether a `calls` document for it
+        exists yet.
+        """
+        return await CallSchedule.find_one(
+            CallSchedule.edesy_call_id == edesy_call_id, CallSchedule.is_deleted == False  # noqa: E712
+        )
 
     async def list_due(self, as_of: datetime, limit: int = 50) -> list[CallSchedule]:
         """The outbound queue worker's core read: all pending entries due now — backed by the

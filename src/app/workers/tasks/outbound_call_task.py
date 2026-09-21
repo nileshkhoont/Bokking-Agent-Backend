@@ -5,7 +5,7 @@ idempotent on Edesy's side, so `call_schedules._id` is passed as the idempotency
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from app.core.config import settings
 from app.core.constants import CallScheduleStatus
@@ -13,8 +13,9 @@ from app.core.exceptions import EdesyIntegrationError
 from app.core.logging import get_logger
 from app.db.mongodb import close_db, connect_db
 from app.integrations.edesy.client import edesy_client
-from app.integrations.edesy.prompts import render_admin_instructions_context
+from app.integrations.edesy.prompts import build_call_variables, render_admin_instructions_context
 from app.models.person import Person
+from app.repositories.appointment_repository import appointment_repository
 from app.repositories.call_schedule_repository import call_schedule_repository
 from app.workers.celery_app import celery_app
 
@@ -50,12 +51,15 @@ async def dispatch_due_calls_once() -> int:
             "appointment_id": schedule.appointment_id,
             "admin_instructions": render_admin_instructions_context(schedule.admin_instructions),
         }
+        previous_appointment = await appointment_repository.get_active_for_person(schedule.person_id)
+        variables = build_call_variables(person, previous_appointment)
 
         try:
             result = await edesy_client.place_call(
                 agent_id=settings.edesy_agent_id,
                 phone_number=person.phone_number,
                 context=context,
+                variables=variables,
                 idempotency_key=str(schedule.id),
             )
             schedule.edesy_call_id = result.call_id
@@ -63,10 +67,14 @@ async def dispatch_due_calls_once() -> int:
             dispatched += 1
             logger.info("outbound_call_dispatched", schedule_id=str(schedule.id), edesy_call_id=result.call_id)
         except EdesyIntegrationError as exc:
-            logger.error("outbound_call_dispatch_failed", schedule_id=str(schedule.id), error=str(exc))
-            # Back off: revert to pending a few minutes out rather than hot-looping every poll.
-            schedule.status = CallScheduleStatus.pending
-            schedule.scheduled_at = datetime.now(UTC) + timedelta(minutes=5)
+            # No retry on a dispatch failure either — mark it missed and move on rather than
+            # looping. An admin has to schedule a new call if this needs to happen again.
+            schedule.status = CallScheduleStatus.missed
+            logger.error(
+                "outbound_call_dispatch_failed",
+                schedule_id=str(schedule.id),
+                error=str(exc),
+            )
             await schedule.save()
     return dispatched
 

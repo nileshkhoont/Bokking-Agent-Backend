@@ -23,7 +23,6 @@ class BookingSource(str, Enum):
 class CallType(str, Enum):
     inbound = "inbound"
     outbound_admin_scheduled = "outbound_admin_scheduled"
-    outbound_missed_retry = "outbound_missed_retry"
 
 
 class Direction(str, Enum):
@@ -48,7 +47,6 @@ class CallOutcome(str, Enum):
 
 class CallPurpose(str, Enum):
     admin_scheduled = "admin_scheduled"
-    missed_call_retry = "missed_call_retry"
     person_requested_callback = "person_requested_callback"
 
 
@@ -78,20 +76,3 @@ class AuditAction(str, Enum):
     delete = "delete"
     reschedule = "reschedule"
     cancel = "cancel"
-
-
-# Edesy webhook event names this system understands (integrations/edesy/webhook_events.py)
-EDESY_EVENT_CALL_STARTED = "call.started"
-EDESY_EVENT_CALL_ENDED = "call.ended"
-EDESY_EVENT_CALL_FAILED = "call.failed"
-EDESY_EVENT_FUNCTION_CALLED = "function.called"
-
-# Edesy call.failed failure_reason -> our CallStatus
-EDESY_FAILURE_REASON_TO_CALL_STATUS = {
-    "busy": CallStatus.busy,
-    "no-answer": CallStatus.no_answer,
-    "no_answer": CallStatus.no_answer,
-    "rejected": CallStatus.failed,
-    "failed": CallStatus.failed,
-    "voicemail": CallStatus.no_answer,
-}

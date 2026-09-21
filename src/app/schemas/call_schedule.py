@@ -20,6 +20,8 @@ class CallScheduleCreate(BaseModel):
 class CallScheduleOut(BaseModel):
     id: str
     person_id: str
+    person_full_name: str | None = None
+    person_phone_number: str | None = None
     appointment_id: str | None = None
     scheduled_at: datetime
     call_purpose: CallPurpose
@@ -27,9 +29,6 @@ class CallScheduleOut(BaseModel):
     source_call_id: str | None = None
     admin_instructions: str | None = None
     status: CallScheduleStatus
-    attempt_number: int
-    max_attempts: int
-    parent_schedule_id: str | None = None
     created_by: str | None = None
     edesy_call_id: str | None = None
     created_at: datetime

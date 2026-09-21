@@ -6,7 +6,7 @@ from app.models.person import Address
 
 
 class PersonCreate(BaseModel):
-    full_name: str
+    full_name: str | None = None
     phone_number: str
     alternate_phone: str | None = None
     email: str | None = None
@@ -30,7 +30,7 @@ class PersonUpdate(BaseModel):
 
 class PersonOut(BaseModel):
     id: str
-    full_name: str
+    full_name: str | None = None
     phone_number: str
     alternate_phone: str | None = None
     email: str | None = None

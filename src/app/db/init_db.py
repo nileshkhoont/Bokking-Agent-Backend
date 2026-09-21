@@ -29,9 +29,7 @@ CALL_SCHEDULES_VALIDATOR = {
         "properties": {
             "person_id": {"bsonType": "string"},
             "scheduled_at": {"bsonType": "date"},
-            "call_purpose": {
-                "enum": ["admin_scheduled", "missed_call_retry", "person_requested_callback"]
-            },
+            "call_purpose": {"enum": ["admin_scheduled", "person_requested_callback"]},
             "requested_by": {"enum": ["admin", "system", "person"]},
             "status": {"enum": ["pending", "in_progress", "completed", "missed", "cancelled"]},
         },
@@ -44,9 +42,7 @@ CALLS_VALIDATOR = {
         "required": ["person_id", "call_type", "direction", "call_status", "created_at"],
         "properties": {
             "person_id": {"bsonType": "string"},
-            "call_type": {
-                "enum": ["inbound", "outbound_admin_scheduled", "outbound_missed_retry"]
-            },
+            "call_type": {"enum": ["inbound", "outbound_admin_scheduled"]},
             "direction": {"enum": ["inbound", "outbound"]},
             "call_status": {"enum": ["answered", "missed", "failed", "busy", "no_answer"]},
             "outcome": {

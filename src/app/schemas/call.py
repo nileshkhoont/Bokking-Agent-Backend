@@ -6,18 +6,12 @@ from pydantic import BaseModel
 from app.core.constants import CallOutcome, CallStatus, CallType, Direction
 
 
-class TranscriptTurn(BaseModel):
-    """Edesy's transcript shape: a summary plus an array of turns — not a single text blob."""
-
-    role: str  # "agent" | "person"
-    content: str
-    timestamp: datetime | None = None
-
-
 class CallOut(BaseModel):
     id: str
     call_schedule_id: str | None = None
     person_id: str
+    person_full_name: str | None = None
+    person_phone_number: str | None = None
     appointment_id: str | None = None
     call_type: CallType
     direction: Direction

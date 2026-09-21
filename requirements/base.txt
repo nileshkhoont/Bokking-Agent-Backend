@@ -11,5 +11,7 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 structlog==24.4.0
+colorama==0.4.6
 celery==5.4.0
 redis==5.0.8
+flower==2.1.0

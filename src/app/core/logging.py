@@ -5,13 +5,34 @@ import structlog
 
 from app.core.config import settings
 
+# High-volume libraries whose own INFO/DEBUG chatter (Mongo driver heartbeats/topology events,
+# HTTP client internals, the --reload file watcher, multipart parsing) would otherwise drown out
+# our own structured logs. Always capped at WARNING, independent of settings.log_level.
+_NOISY_LOGGERS = [
+    "pymongo",
+    "motor",
+    "httpx",
+    "httpcore",
+    "asyncio",
+    "watchfiles",
+    "multipart",
+    # Duplicate of the one-line "http_request" event core/middleware.py already logs per request.
+    "uvicorn.access",
+]
+
 
 def configure_logging() -> None:
+    # force=True: without it, this is a silent no-op whenever another library (uvicorn, celery)
+    # has already attached a handler to the root logger before we get here.
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
-        level=logging.DEBUG if settings.environment == "development" else logging.INFO,
+        level=settings.log_level.upper(),
+        force=True,
     )
+
+    for logger_name in _NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,

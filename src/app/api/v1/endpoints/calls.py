@@ -7,7 +7,9 @@ from app.core.constants import CallOutcome, CallStatus, CallType
 from app.core.exceptions import NotFoundError
 from app.models.admin import Admin
 from app.models.call import Call
+from app.models.person import Person
 from app.repositories.call_repository import call_repository
+from app.repositories.person_repository import person_repository
 from app.schemas.call import CallOut
 from app.schemas.common import Page, PageParams
 from app.utils.pagination import build_page
@@ -15,11 +17,13 @@ from app.utils.pagination import build_page
 router = APIRouter(prefix="/calls", tags=["calls"])
 
 
-def _to_out(call: Call) -> CallOut:
+def _to_out(call: Call, person: Person | None = None) -> CallOut:
     return CallOut(
         id=str(call.id),
         call_schedule_id=call.call_schedule_id,
         person_id=call.person_id,
+        person_full_name=person.full_name if person else None,
+        person_phone_number=person.phone_number if person else None,
         appointment_id=call.appointment_id,
         call_type=call.call_type,
         direction=call.direction,
@@ -57,7 +61,8 @@ async def list_calls(
         outcome=outcome,
         person_id=person_id,
     )
-    return build_page([_to_out(c) for c in items], total, page)
+    persons = await person_repository.get_many_by_ids({c.person_id for c in items})
+    return build_page([_to_out(c, persons.get(c.person_id)) for c in items], total, page)
 
 
 @router.get("/{call_id}", response_model=CallOut)
@@ -65,4 +70,5 @@ async def get_call(call_id: str, _: Admin = Depends(get_current_admin)) -> CallO
     call = await call_repository.get_by_id(call_id)
     if call is None:
         raise NotFoundError("Call not found")
-    return _to_out(call)
+    person = await person_repository.get_by_id(call.person_id)
+    return _to_out(call, person)

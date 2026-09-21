@@ -15,8 +15,4 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.missed_call_retry_task.sweep_stuck_schedules",
         "schedule": 600.0,  # every 10 minutes
     },
-    "cleanup-old-records": {
-        "task": "app.workers.tasks.cleanup_task.archive_old_records",
-        "schedule": 86400.0,  # once a day
-    },
 }

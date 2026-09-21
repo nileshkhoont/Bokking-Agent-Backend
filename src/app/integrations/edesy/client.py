@@ -14,12 +14,9 @@ from app.core.config import settings
 from app.core.exceptions import EdesyIntegrationError
 from app.core.logging import get_logger
 from app.integrations.edesy.schemas import (
-    EdesyAgentCreateRequest,
     EdesyAgentResponse,
     EdesyAgentUpdateRequest,
     EdesyCallResponse,
-    EdesyFunctionCreateResponse,
-    EdesyFunctionDefinition,
     EdesyPlaceCallRequest,
     EdesyPlaceCallResponse,
 )
@@ -86,10 +83,6 @@ class EdesyClient:
 
                 return response
 
-    async def create_agent(self, payload: EdesyAgentCreateRequest) -> EdesyAgentResponse:
-        response = await self._request("POST", "/api/v1/agents", json=payload.model_dump())
-        return EdesyAgentResponse.model_validate(response.json())
-
     async def update_agent(self, agent_id: str, payload: EdesyAgentUpdateRequest) -> EdesyAgentResponse:
         body = {k: v for k, v in payload.model_dump().items() if v is not None}
         response = await self._request("PATCH", f"/api/v1/agents/{agent_id}", json=body)
@@ -99,28 +92,26 @@ class EdesyClient:
         response = await self._request("GET", f"/api/v1/agents/{agent_id}")
         return EdesyAgentResponse.model_validate(response.json())
 
-    async def register_function(self, payload: EdesyFunctionDefinition) -> EdesyFunctionCreateResponse:
-        response = await self._request("POST", "/api/v1/functions", json=payload.model_dump())
-        return EdesyFunctionCreateResponse.model_validate(response.json())
-
     async def place_call(
         self,
         agent_id: str,
         phone_number: str,
         context: dict,
         idempotency_key: str,
+        variables: dict | None = None,
         callback_url: str | None = None,
     ) -> EdesyPlaceCallResponse:
         payload = EdesyPlaceCallRequest(
             agentId=agent_id,
             phoneNumber=phone_number,
             context=context,
+            variables=variables or {},
             callbackUrl=callback_url,
             idempotencyKey=idempotency_key,
         )
-        response = await self._request(
-            "POST", "/api/v1/calls", json=payload.model_dump(), retryable=True
-        )
+        request_body = payload.model_dump()
+        logger.info("edesy_place_call_request", body=request_body)
+        response = await self._request("POST", "/api/v1/calls", json=request_body, retryable=True)
         body = response.json()
         logger.info("edesy_place_call_response", body=body)
         result = EdesyPlaceCallResponse.from_response_body(body)

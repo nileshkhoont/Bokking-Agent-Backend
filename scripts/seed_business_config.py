@@ -20,7 +20,7 @@ from app.models.business_config import BusinessConfig, WorkingHours  # noqa: E40
 
 PLACEHOLDER_CONFIG = dict(
     working_days=["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
-    working_hours=WorkingHours(start="09:00", end="18:00"),
+    working_hours=[WorkingHours(start="09:00", end="18:00")],
     slot_duration_minutes=30,
     buffer_minutes=0,
     holidays=[],

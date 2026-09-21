@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from beanie import PydanticObjectId
+
 from app.core.constants import CallOutcome, CallStatus, CallType
 from app.models.call import Call
 from app.schemas.common import PageParams
@@ -7,6 +9,8 @@ from app.schemas.common import PageParams
 
 class CallRepository:
     async def get_by_id(self, call_id: str) -> Call | None:
+        if not PydanticObjectId.is_valid(call_id):
+            return None
         call = await Call.get(call_id)
         if call is None or call.is_deleted:
             return None

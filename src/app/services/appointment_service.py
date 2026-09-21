@@ -6,6 +6,7 @@ from app.core.constants import AppointmentStatus, BookingSource
 from app.core.exceptions import NotFoundError, SlotUnavailableError
 from app.models.appointment import Appointment
 from app.repositories.appointment_repository import appointment_repository
+from app.repositories.person_repository import person_repository
 from app.services.slot_service import slot_service
 from app.utils.datetime_utils import ensure_utc
 
@@ -25,6 +26,9 @@ class AppointmentService:
         notes: str | None = None,
         created_by_call_id: str | None = None,
     ) -> Appointment:
+        if await person_repository.get_by_id(person_id) is None:
+            raise NotFoundError("Person not found")
+
         appointment_datetime = ensure_utc(appointment_datetime)
         slot = await slot_service.check_availability(appointment_datetime)
         if not slot.available:
