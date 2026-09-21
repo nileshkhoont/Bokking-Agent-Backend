@@ -7,7 +7,6 @@ from app.models.call import Call
 from app.repositories.call_repository import call_repository
 from app.repositories.call_schedule_repository import call_schedule_repository
 from app.repositories.person_repository import person_repository
-from app.services.missed_call_retry_service import missed_call_retry_service
 
 logger = get_logger(__name__)
 
@@ -96,11 +95,7 @@ class CallService:
             if schedule:
                 person_id = schedule.person_id
                 appointment_id = schedule.appointment_id
-                call_type = (
-                    CallType.outbound_missed_retry
-                    if schedule.call_purpose.value == "missed_call_retry"
-                    else CallType.outbound_admin_scheduled
-                )
+                call_type = CallType.outbound_admin_scheduled
                 direction = Direction.outbound
             else:
                 # Inbound — no pre-existing call_schedules row. Identify (or create a placeholder)
@@ -152,11 +147,12 @@ class CallService:
             logger.info("call_updated", call_id=str(call.id), edesy_call_id=call_sid, call_status=call_status)
 
         if schedule:
-            if call_status == CallStatus.answered:
-                schedule.status = CallScheduleStatus.completed
-                await schedule.save()
-            else:
-                await missed_call_retry_service.handle_failed_call(call)
+            # No auto-retry on failure/no-answer — a missed schedule just stays missed; an admin
+            # (or the person themselves, via a callback request) must schedule a new call.
+            schedule.status = (
+                CallScheduleStatus.completed if call_status == CallStatus.answered else CallScheduleStatus.missed
+            )
+            await schedule.save()
 
         return call
 

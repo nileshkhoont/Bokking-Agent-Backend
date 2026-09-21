@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from beanie import PydanticObjectId
+
 from app.core.constants import CallPurpose, CallScheduleStatus
 from app.models.call_schedule import CallSchedule
 from app.schemas.common import PageParams
@@ -7,6 +9,8 @@ from app.schemas.common import PageParams
 
 class CallScheduleRepository:
     async def get_by_id(self, schedule_id: str) -> CallSchedule | None:
+        if not PydanticObjectId.is_valid(schedule_id):
+            return None
         schedule = await CallSchedule.get(schedule_id)
         if schedule is None or schedule.is_deleted:
             return None

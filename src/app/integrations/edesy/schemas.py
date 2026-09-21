@@ -8,42 +8,6 @@ from typing import Any
 from pydantic import BaseModel
 
 
-class EdesyFunctionParameter(BaseModel):
-    name: str
-    type: str
-    description: str
-    required: bool = True
-
-
-class EdesyFunctionDefinition(BaseModel):
-    """One registered "tool" the Edesy agent can invoke mid-call — maps 1:1 onto one of our
-    api/v1/endpoints/agent_tools.py endpoints.
-    """
-
-    name: str
-    description: str
-    httpUrl: str
-    httpMethod: str = "POST"
-    headers: dict[str, str] = {}
-    parameters: list[EdesyFunctionParameter] = []
-
-
-class EdesyFunctionCreateResponse(BaseModel):
-    id: str
-    name: str
-
-
-class EdesyAgentCreateRequest(BaseModel):
-    name: str
-    prompt: str
-    greetingMessage: str
-    language: str = "en"
-    callProvider: str | None = None
-    voice: str | None = None
-    llmProvider: str | None = None
-    functionIds: list[str] = []
-
-
 class EdesyAgentUpdateRequest(BaseModel):
     prompt: str | None = None
     greetingMessage: str | None = None

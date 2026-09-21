@@ -6,6 +6,8 @@ from app.schemas.common import PageParams
 
 class PersonRepository:
     async def get_by_id(self, person_id: str) -> Person | None:
+        if not PydanticObjectId.is_valid(person_id):
+            return None
         person = await Person.get(person_id)
         if person is None or person.is_deleted:
             return None
@@ -13,11 +15,13 @@ class PersonRepository:
 
     async def get_many_by_ids(self, person_ids: set[str]) -> dict[str, Person]:
         """Batch lookup for list endpoints (calls/appointments/call-schedules) that need to show
-        the person's name/phone next to each row without an N+1 query per row.
+        the person's name/phone next to each row without an N+1 query per row. Silently skips any
+        id that isn't a well-formed ObjectId — a bad id on one row (e.g. a corrupt legacy record)
+        must not take down the whole list.
         """
-        if not person_ids:
+        object_ids = [PydanticObjectId(pid) for pid in person_ids if PydanticObjectId.is_valid(pid)]
+        if not object_ids:
             return {}
-        object_ids = [PydanticObjectId(pid) for pid in person_ids]
         persons = await Person.find({"_id": {"$in": object_ids}}).to_list()
         return {str(p.id): p for p in persons}
 

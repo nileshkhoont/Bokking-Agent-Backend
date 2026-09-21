@@ -29,9 +29,6 @@ class CallScheduleOut(BaseModel):
     source_call_id: str | None = None
     admin_instructions: str | None = None
     status: CallScheduleStatus
-    attempt_number: int
-    max_attempts: int
-    parent_schedule_id: str | None = None
     created_by: str | None = None
     edesy_call_id: str | None = None
     created_at: datetime

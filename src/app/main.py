@@ -11,12 +11,12 @@ from app.db.init_db import apply_schema_validators
 from app.db.mongodb import close_db, connect_db, get_database
 from app.workers import inprocess_scheduler
 
+configure_logging()
 logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging()
     await connect_db()
     await apply_schema_validators(get_database())
     if settings.enable_inprocess_scheduler:

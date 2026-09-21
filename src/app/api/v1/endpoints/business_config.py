@@ -13,7 +13,7 @@ router = APIRouter(prefix="/business-config", tags=["business_config"])
 
 class BusinessConfigUpdate(BaseModel):
     working_days: list[str] | None = None
-    working_hours: WorkingHours | None = None
+    working_hours: list[WorkingHours] | None = None
     slot_duration_minutes: int | None = None
     buffer_minutes: int | None = None
     holidays: list[Holiday] | None = None

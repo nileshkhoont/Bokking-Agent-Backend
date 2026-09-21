@@ -23,7 +23,6 @@ class BookingSource(str, Enum):
 class CallType(str, Enum):
     inbound = "inbound"
     outbound_admin_scheduled = "outbound_admin_scheduled"
-    outbound_missed_retry = "outbound_missed_retry"
 
 
 class Direction(str, Enum):
@@ -48,7 +47,6 @@ class CallOutcome(str, Enum):
 
 class CallPurpose(str, Enum):
     admin_scheduled = "admin_scheduled"
-    missed_call_retry = "missed_call_retry"
     person_requested_callback = "person_requested_callback"
 
 

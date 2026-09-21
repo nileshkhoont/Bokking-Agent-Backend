@@ -1,6 +1,5 @@
 from datetime import datetime
 
-from app.core.config import settings
 from app.core.constants import ActorType, AuditAction, CallPurpose, CallScheduleStatus, RequestedBy
 from app.core.exceptions import NotFoundError
 from app.models.call_schedule import CallSchedule
@@ -31,8 +30,6 @@ class CallScheduleService:
             requested_by=RequestedBy.admin,
             admin_instructions=admin_instructions,
             status=CallScheduleStatus.pending,
-            attempt_number=1,
-            max_attempts=settings.default_max_call_attempts,
             created_by=admin_id,
         )
         await schedule.insert()

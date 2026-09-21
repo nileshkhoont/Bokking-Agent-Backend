@@ -30,7 +30,7 @@ async def _db():
 async def business_config() -> BusinessConfig:
     config = BusinessConfig(
         working_days=["monday", "tuesday", "wednesday", "thursday", "friday"],
-        working_hours=WorkingHours(start="09:00", end="17:00"),
+        working_hours=[WorkingHours(start="09:00", end="17:00")],
         slot_duration_minutes=30,
         buffer_minutes=0,
         holidays=[],

@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from beanie import PydanticObjectId
+
 from app.core.constants import AppointmentStatus
 from app.models.appointment import Appointment
 from app.schemas.common import PageParams
@@ -9,6 +11,8 @@ ACTIVE_STATUSES = [AppointmentStatus.booked, AppointmentStatus.rescheduled]
 
 class AppointmentRepository:
     async def get_by_id(self, appointment_id: str) -> Appointment | None:
+        if not PydanticObjectId.is_valid(appointment_id):
+            return None
         appointment = await Appointment.get(appointment_id)
         if appointment is None or appointment.is_deleted:
             return None
@@ -40,6 +44,18 @@ class AppointmentRepository:
         if exclude_appointment_id:
             query["_id"] = {"$ne": exclude_appointment_id}
         return await Appointment.find(query).count() > 0
+
+    async def list_active_between(self, start: datetime, end: datetime) -> list[Appointment]:
+        """All booked/rescheduled appointments in a UTC range — used by
+        slot_service.list_available_slots to filter a day's generated slot grid against real
+        bookings in one query instead of one exists_active_at query per candidate slot.
+        """
+        return await Appointment.find(
+            Appointment.appointment_datetime >= start,
+            Appointment.appointment_datetime < end,
+            Appointment.is_deleted == False,  # noqa: E712
+            {"status": {"$in": [s.value for s in ACTIVE_STATUSES]}},
+        ).to_list()
 
     async def list_for_person(self, person_id: str) -> list[Appointment]:
         return (

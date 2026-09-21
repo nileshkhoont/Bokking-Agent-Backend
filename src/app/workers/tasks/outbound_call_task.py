@@ -5,7 +5,7 @@ idempotent on Edesy's side, so `call_schedules._id` is passed as the idempotency
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from app.core.config import settings
 from app.core.constants import CallScheduleStatus
@@ -67,30 +67,14 @@ async def dispatch_due_calls_once() -> int:
             dispatched += 1
             logger.info("outbound_call_dispatched", schedule_id=str(schedule.id), edesy_call_id=result.call_id)
         except EdesyIntegrationError as exc:
-            schedule.attempt_number += 1
-            if schedule.attempt_number > schedule.max_attempts:
-                # The API call to place it is failing outright (bad credentials, no credits,
-                # Edesy outage, ...) — retrying forever every 5 minutes with no visibility was the
-                # actual bug behind a "why hasn't my call happened" report. Stop and surface it as
-                # a normal missed schedule instead of looping silently.
-                schedule.status = CallScheduleStatus.missed
-                logger.error(
-                    "outbound_call_dispatch_exhausted",
-                    schedule_id=str(schedule.id),
-                    attempts=schedule.attempt_number - 1,
-                    last_error=str(exc),
-                )
-            else:
-                # Back off: revert to pending a few minutes out rather than hot-looping every poll.
-                schedule.status = CallScheduleStatus.pending
-                schedule.scheduled_at = datetime.now(UTC) + timedelta(minutes=5)
-                logger.error(
-                    "outbound_call_dispatch_failed",
-                    schedule_id=str(schedule.id),
-                    attempt=schedule.attempt_number,
-                    max_attempts=schedule.max_attempts,
-                    error=str(exc),
-                )
+            # No retry on a dispatch failure either — mark it missed and move on rather than
+            # looping. An admin has to schedule a new call if this needs to happen again.
+            schedule.status = CallScheduleStatus.missed
+            logger.error(
+                "outbound_call_dispatch_failed",
+                schedule_id=str(schedule.id),
+                error=str(exc),
+            )
             await schedule.save()
     return dispatched
 

@@ -11,37 +11,34 @@ services:
     ports:
       - "6379:6379"
 
+  # MONGODB_URI is intentionally NOT overridden here — it comes from .env (MongoDB Atlas), the
+  # same database the API (run directly on the host via uvicorn) and the admin dashboard use.
+  # Overriding it per-service to point at local/container-only Mongo instances was the root cause
+  # of scheduled calls silently never dispatching: the schedule got created in Atlas, but the
+  # worker was polling an empty local database and never saw it.
   api:
     build: .
     ports:
       - "5000:5000"
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://mongo:27017
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
-      - mongo
       - redis
 
-  # celery_worker/celery_beat point at MONGODB_URI=host.docker.internal instead of the `mongo`
-  # service above — for local dev where the real data lives in MongoDB running directly on the
-  # host (not the `mongo` container, which is a separate, empty database). Run with:
-  #   docker compose up -d --build redis celery_worker celery_beat flower
-  # (deliberately not `docker compose up -d` alone, which would also start `api` and the empty
-  # `mongo` container).
+  # Run with: docker compose up -d --build redis celery_worker celery_beat flower
+  # (deliberately not `docker compose up -d` alone, which would also start the unused `mongo`
+  # container below — kept only as an opt-in local fallback, nothing points at it by default).
   celery_worker:
     build: .
     command: celery -A app.workers.celery_app worker -l info
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://host.docker.internal:27017
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       - redis
 
@@ -50,12 +47,9 @@ services:
     command: celery -A app.workers.celery_app beat -l info
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://host.docker.internal:27017
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       - redis
 

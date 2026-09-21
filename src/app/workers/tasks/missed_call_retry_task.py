@@ -1,16 +1,16 @@
-"""Safety-net sweep for call_schedules stuck `in_progress` past a reasonable window — the primary
-missed-call retry trigger is the synchronous `call.failed` webhook handler
-(services.missed_call_retry_service.handle_failed_call), not this periodic task. This only
-catches the case where Edesy's webhook delivery for a placed call never arrived at all.
+"""Safety-net sweep for call_schedules stuck `in_progress` past a reasonable window — catches the
+case where Edesy's webhook delivery for a placed call never arrived at all (delivery failure,
+dropped event, ...). Stuck entries are simply marked `missed`; nothing is retried automatically —
+an admin (or the person themselves, via a callback request) has to schedule a new call.
 """
 
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from app.core.constants import CallScheduleStatus
 from app.core.logging import get_logger
 from app.db.mongodb import close_db, connect_db
 from app.repositories.call_schedule_repository import call_schedule_repository
-from app.services.missed_call_retry_service import missed_call_retry_service
 from app.workers.celery_app import celery_app
 
 logger = get_logger(__name__)
@@ -26,7 +26,8 @@ async def sweep_stuck_schedules_once() -> int:
     cutoff = datetime.now(UTC) - timedelta(minutes=STUCK_THRESHOLD_MINUTES)
     stuck = await call_schedule_repository.list_stuck_in_progress(cutoff)
     for schedule in stuck:
-        await missed_call_retry_service.handle_stuck_schedule(schedule)
+        schedule.status = CallScheduleStatus.missed
+        await schedule.save()
         swept += 1
         logger.warning("stuck_call_schedule_swept", schedule_id=str(schedule.id))
     return swept

@@ -23,6 +23,9 @@ sent. The real shape is nested, not flat:
       "transcript": [ { "speaker": "agent", "text": "...", "timestamp": "..." }, ... ]
     }
 
+`data` has been observed as both `{}` and `null` across different calls (2026-09-21) — unused by
+our own code either way, so it's typed as optional rather than assumed to always be a dict.
+
 Per the dashboard's own description ("When triggered: After every call ends (completed,
 transferred, or hung up)"), this ONE event appears to be Vani's only webhook — fired once per
 call, after it ends, with `outcome.status`/`outcome.endReason` distinguishing success from a
@@ -88,7 +91,7 @@ class CallEndedEvent(BaseModel):
     call: CallInfo
     agent: AgentInfo | None = None
     outcome: OutcomeInfo | None = None
-    data: dict[str, Any] = {}
+    data: dict[str, Any] | None = None
     transcript: list[TranscriptTurnPayload] = []
 
 

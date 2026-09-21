@@ -1,6 +1,17 @@
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import settings
+from app.core.logging import configure_logging
+
+
+@setup_logging.connect
+def _configure_celery_logging(**_kwargs) -> None:
+    # Connecting to this signal tells Celery to skip its own logging.config setup entirely and
+    # defer to ours instead — the documented way to keep worker/beat output in the same
+    # structlog format as the API process instead of Celery's separate log format.
+    configure_logging()
+
 
 celery_app = Celery(
     "ai_calling_agent",
@@ -9,7 +20,6 @@ celery_app = Celery(
     include=[
         "app.workers.tasks.outbound_call_task",
         "app.workers.tasks.missed_call_retry_task",
-        "app.workers.tasks.cleanup_task",
     ],
 )
 

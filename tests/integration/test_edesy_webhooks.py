@@ -107,8 +107,6 @@ async def test_call_ended_for_outbound_schedule_marks_completed(client: AsyncCli
         call_purpose="admin_scheduled",
         requested_by="admin",
         status="in_progress",
-        attempt_number=1,
-        max_attempts=3,
         edesy_call_id="sid-outbound-1",
     )
     await schedule.insert()
@@ -126,15 +124,13 @@ async def test_call_ended_for_outbound_schedule_marks_completed(client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_call_ended_failure_triggers_missed_call_retry(client: AsyncClient):
+async def test_call_ended_failure_marks_missed_with_no_retry(client: AsyncClient):
     schedule = CallSchedule(
         person_id="person-y",
         scheduled_at=datetime.now(UTC),
         call_purpose="admin_scheduled",
         requested_by="admin",
         status="in_progress",
-        attempt_number=1,
-        max_attempts=3,
         edesy_call_id="sid-outbound-2",
     )
     await schedule.insert()
@@ -156,10 +152,9 @@ async def test_call_ended_failure_triggers_missed_call_retry(client: AsyncClient
     original = await CallSchedule.get(schedule.id)
     assert original.status == "missed"
 
-    retry = await CallSchedule.find_one(CallSchedule.parent_schedule_id == str(schedule.id))
-    assert retry is not None
-    assert retry.attempt_number == 2
-    assert retry.call_purpose == "missed_call_retry"
+    # No auto-retry — this was the only call_schedules row for this person.
+    remaining = await CallSchedule.find(CallSchedule.person_id == "person-y").count()
+    assert remaining == 1
 
 
 @pytest.mark.asyncio

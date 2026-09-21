@@ -14,12 +14,9 @@ from app.core.config import settings
 from app.core.exceptions import EdesyIntegrationError
 from app.core.logging import get_logger
 from app.integrations.edesy.schemas import (
-    EdesyAgentCreateRequest,
     EdesyAgentResponse,
     EdesyAgentUpdateRequest,
     EdesyCallResponse,
-    EdesyFunctionCreateResponse,
-    EdesyFunctionDefinition,
     EdesyPlaceCallRequest,
     EdesyPlaceCallResponse,
 )
@@ -86,10 +83,6 @@ class EdesyClient:
 
                 return response
 
-    async def create_agent(self, payload: EdesyAgentCreateRequest) -> EdesyAgentResponse:
-        response = await self._request("POST", "/api/v1/agents", json=payload.model_dump())
-        return EdesyAgentResponse.model_validate(response.json())
-
     async def update_agent(self, agent_id: str, payload: EdesyAgentUpdateRequest) -> EdesyAgentResponse:
         body = {k: v for k, v in payload.model_dump().items() if v is not None}
         response = await self._request("PATCH", f"/api/v1/agents/{agent_id}", json=body)
@@ -98,10 +91,6 @@ class EdesyClient:
     async def get_agent(self, agent_id: str) -> EdesyAgentResponse:
         response = await self._request("GET", f"/api/v1/agents/{agent_id}")
         return EdesyAgentResponse.model_validate(response.json())
-
-    async def register_function(self, payload: EdesyFunctionDefinition) -> EdesyFunctionCreateResponse:
-        response = await self._request("POST", "/api/v1/functions", json=payload.model_dump())
-        return EdesyFunctionCreateResponse.model_validate(response.json())
 
     async def place_call(
         self,

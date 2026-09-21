@@ -16,7 +16,7 @@ class Address(BaseModel):
 
 
 class Person(TimestampedDocument):
-    full_name: str
+    full_name: str | None = None
     phone_number: Indexed(str, unique=True)  # E.164, e.g. "+919876543210" — natural identity key
     alternate_phone: str | None = None
     email: str | None = None
