@@ -112,7 +112,19 @@ class BookAppointmentRequest(BaseModel):
     # guarantees every appointment has a real person_id regardless of what the prompt does.
     phone_number: str
     requested_datetime: datetime
-    call_id: str | None = None  # our internal calls._id for this in-progress call
+    # No call_id field here on purpose — our internal calls._id doesn't exist yet at this point
+    # (that document is only created when the call.ended webhook arrives, after the call is
+    # already over), so there was never a real value an agent could supply for it. It was
+    # observed sending "none", made-up placeholders, or Edesy's own call id (the wrong id
+    # entirely).
+    #
+    # edesy_call_id is different: it's Edesy's own call-context variable ({{call.sid}}),
+    # resolved live by Edesy's platform, not guessed by the LLM — so it's exact and globally
+    # unique per call even when the same person has two calls at once. call_service.py uses it
+    # for an exact-match correlation once the call.ended webhook creates the real Call document,
+    # falling back to a person+timing heuristic only when this wasn't provided (e.g. an older
+    # dashboard config, or the prompt genuinely doesn't have it).
+    edesy_call_id: str | None = None
     # If the caller states/confirms their name during this call (e.g. a call that was scheduled
     # with only a phone number), pass it here so it actually reaches the Person record — the
     # same update-if-different logic identify_person already uses. Optional: omitted or None
@@ -128,7 +140,7 @@ async def book_appointment(payload: BookAppointmentRequest) -> ToolResponse:
             person_id=str(person.id),
             appointment_datetime=payload.requested_datetime,
             booking_source=BookingSource.inbound_call,
-            created_by_call_id=payload.call_id,
+            pending_edesy_call_id=payload.edesy_call_id,
         )
     except AppError as exc:
         return ToolResponse(success=False, message=exc.message)
@@ -153,7 +165,7 @@ class RescheduleAppointmentRequest(BaseModel):
     phone_number: str
     new_appointment_datetime: datetime
     appointment_id: str | None = None
-    call_id: str | None = None
+    edesy_call_id: str | None = None  # same reasoning as BookAppointmentRequest.edesy_call_id
     full_name: str | None = None  # same reasoning as BookAppointmentRequest.full_name
 
 
@@ -172,7 +184,7 @@ async def reschedule_appointment(payload: RescheduleAppointmentRequest) -> ToolR
         appointment = await appointment_service.reschedule_existing(
             appointment_id=appointment_id,
             new_appointment_datetime=payload.new_appointment_datetime,
-            created_by_call_id=payload.call_id,
+            pending_edesy_call_id=payload.edesy_call_id,
         )
     except AppError as exc:
         return ToolResponse(success=False, message=exc.message)
