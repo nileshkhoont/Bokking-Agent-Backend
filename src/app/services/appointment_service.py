@@ -25,6 +25,7 @@ class AppointmentService:
         duration_minutes: int | None = None,
         notes: str | None = None,
         created_by_call_id: str | None = None,
+        pending_edesy_call_id: str | None = None,
     ) -> Appointment:
         if await person_repository.get_by_id(person_id) is None:
             raise NotFoundError("Person not found")
@@ -42,6 +43,7 @@ class AppointmentService:
             booking_source=booking_source,
             notes=notes,
             created_by_call_id=created_by_call_id,
+            pending_edesy_call_id=pending_edesy_call_id,
         )
         try:
             await appointment.insert()
@@ -55,6 +57,7 @@ class AppointmentService:
         new_appointment_datetime: datetime,
         notes: str | None = None,
         created_by_call_id: str | None = None,
+        pending_edesy_call_id: str | None = None,
     ) -> Appointment:
         existing = await appointment_repository.get_by_id(appointment_id)
         if existing is None or existing.status not in (
@@ -79,6 +82,7 @@ class AppointmentService:
             original_appointment_id=str(existing.id),
             notes=notes or existing.notes,
             created_by_call_id=created_by_call_id,
+            pending_edesy_call_id=pending_edesy_call_id,
         )
 
         # Free the old slot first so the new insert's unique-index check doesn't collide with it.

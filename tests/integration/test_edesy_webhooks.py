@@ -7,12 +7,14 @@ an earlier, entirely-wrong flat-shape assumption that caused every real webhook 
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 
 from app.core.config import settings
+from app.core.constants import AppointmentStatus, BookingSource
+from app.models.appointment import Appointment
 from app.models.call import Call
 from app.models.call_schedule import CallSchedule
 from app.models.person import Person
@@ -173,6 +175,90 @@ async def test_webhook_handles_malformed_call_ended_gracefully(client: AsyncClie
     assert response.status_code == 200
     count = await Call.find(Call.person_id != None).count()  # noqa: E711
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_call_ended_backfills_appointment_created_during_the_call(client: AsyncClient):
+    """Regression test for the 2026-09-22 incident: agent_tools.py has no way to give
+    book_appointment a real calls._id (that document doesn't exist until this webhook runs), so
+    Appointment.created_by_call_id must come from here — correlated by person + the appointment
+    having been created inside this call's own start/end window — not from anything the LLM
+    claimed (observed in production data: "none", "12345", or Edesy's own call id).
+    """
+    person = Person(phone_number="+15557778888")
+    await person.insert()
+
+    appointment = Appointment(
+        person_id=str(person.id),
+        appointment_datetime=datetime.now(UTC) + timedelta(days=1),
+        status=AppointmentStatus.booked,
+        booking_source=BookingSource.inbound_call,
+        created_by_call_id=None,
+    )
+    await appointment.insert()
+
+    payload = _call_ended_payload(call_sid="sid-backfill-1", phone="+15557778888")
+    response = await _post_webhook(client, payload)
+    assert response.status_code == 200
+
+    call = await Call.find_one(Call.edesy_call_id == "sid-backfill-1")
+    assert call is not None
+
+    updated_appointment = await Appointment.get(appointment.id)
+    assert updated_appointment.created_by_call_id == str(call.id)
+
+
+@pytest.mark.asyncio
+async def test_backfill_disambiguates_same_person_overlapping_calls(client: AsyncClient):
+    """The scenario a pure person+time-window heuristic can't safely handle on its own: the same
+    person has two calls whose start/end windows overlap, each having booked its own appointment.
+    pending_edesy_call_id (Edesy's own callSid, captured at booking time, not LLM-guessed) must
+    disambiguate them exactly — appointment A links only to call A, appointment B only to call B,
+    even though both appointments were created inside both calls' overlapping time windows.
+    """
+    person = Person(phone_number="+15559990000")
+    await person.insert()
+
+    now = datetime.now(UTC)
+    appointment_a = Appointment(
+        person_id=str(person.id),
+        appointment_datetime=now + timedelta(days=1),
+        status=AppointmentStatus.booked,
+        booking_source=BookingSource.inbound_call,
+        created_by_call_id=None,
+        pending_edesy_call_id="sid-overlap-a",
+    )
+    await appointment_a.insert()
+
+    appointment_b = Appointment(
+        person_id=str(person.id),
+        appointment_datetime=now + timedelta(days=2),
+        status=AppointmentStatus.booked,
+        booking_source=BookingSource.inbound_call,
+        created_by_call_id=None,
+        pending_edesy_call_id="sid-overlap-b",
+    )
+    await appointment_b.insert()
+
+    # Both calls "end" around the same moment with a long-ish duration, so a naive time-window
+    # match alone would see both appointments as plausible candidates for either call.
+    payload_a = _call_ended_payload(call_sid="sid-overlap-a", phone="+15559990000")
+    payload_a["call"]["duration"] = 600
+    await _post_webhook(client, payload_a)
+
+    payload_b = _call_ended_payload(call_sid="sid-overlap-b", phone="+15559990000")
+    payload_b["call"]["duration"] = 600
+    await _post_webhook(client, payload_b)
+
+    call_a = await Call.find_one(Call.edesy_call_id == "sid-overlap-a")
+    call_b = await Call.find_one(Call.edesy_call_id == "sid-overlap-b")
+
+    updated_a = await Appointment.get(appointment_a.id)
+    updated_b = await Appointment.get(appointment_b.id)
+
+    assert updated_a.created_by_call_id == str(call_a.id)
+    assert updated_b.created_by_call_id == str(call_b.id)
+    assert updated_a.created_by_call_id != updated_b.created_by_call_id
 
 
 @pytest.mark.asyncio

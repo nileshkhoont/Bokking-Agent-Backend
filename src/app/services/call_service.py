@@ -1,12 +1,17 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.core.constants import CallOutcome, CallScheduleStatus, CallStatus, CallType, Direction
 from app.core.logging import get_logger
 from app.integrations.edesy.webhook_events import CallEndedEvent, OutcomeInfo
+from app.models.appointment import Appointment
 from app.models.call import Call
 from app.repositories.call_repository import call_repository
 from app.repositories.call_schedule_repository import call_schedule_repository
 from app.repositories.person_repository import person_repository
+
+# Slack around the call's own start/end (from Edesy's reported duration) to absorb clock skew
+# between Edesy and this server, and the second or two between the tool call and the webhook.
+_LINK_WINDOW_SLACK = timedelta(minutes=2)
 
 logger = get_logger(__name__)
 
@@ -154,7 +159,56 @@ class CallService:
             )
             await schedule.save()
 
+        await self._link_appointment_created_during_call(call, start_time, end_time)
+
         return call
+
+    async def _link_appointment_created_during_call(
+        self, call: Call, start_time: datetime | None, end_time: datetime | None
+    ) -> None:
+        """book_appointment/reschedule_appointment (agent_tools.py) run *during* the live call,
+        before this Call document exists — there is no real calls._id an agent could ever supply
+        at that point (observed: "none", made-up placeholders, or Edesy's own call id instead of
+        ours). Appointment.created_by_call_id is deliberately left unset there and backfilled
+        here instead, in two steps:
+
+        1. Exact match on pending_edesy_call_id (Edesy's own callSid, captured at booking time
+           from the call-context variable {{call.sid}} — not LLM-supplied, so it's unique per
+           call even when the same person has two calls running at once). Tried first because
+           it's unambiguous.
+        2. Falls back to a person + created-within-this-call's-time-window heuristic, only for
+           appointments booked before a dashboard config carries edesy_call_id, or a prompt that
+           doesn't send it. That heuristic is safe across *different* people's concurrent calls
+           (it's scoped by person_id) but could misattribute if the same person genuinely has two
+           overlapping calls — step 1 is what actually closes that gap.
+        """
+        appointment = None
+        if call.edesy_call_id:
+            appointment = await Appointment.find_one(
+                Appointment.pending_edesy_call_id == call.edesy_call_id,
+                Appointment.created_by_call_id == None,  # noqa: E711
+                Appointment.is_deleted == False,  # noqa: E712
+            )
+
+        if appointment is None and start_time and end_time:
+            appointment = (
+                await Appointment.find(
+                    Appointment.person_id == call.person_id,
+                    Appointment.created_by_call_id == None,  # noqa: E711
+                    Appointment.created_at >= start_time - _LINK_WINDOW_SLACK,
+                    Appointment.created_at <= end_time + _LINK_WINDOW_SLACK,
+                    Appointment.is_deleted == False,  # noqa: E712
+                )
+                .sort(-Appointment.created_at)
+                .first_or_none()
+            )
+
+        if appointment:
+            appointment.created_by_call_id = str(call.id)
+            await appointment.save()
+            logger.info(
+                "appointment_linked_to_call", appointment_id=str(appointment.id), call_id=str(call.id)
+            )
 
 
 call_service = CallService()
