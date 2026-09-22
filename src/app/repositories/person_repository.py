@@ -2,6 +2,7 @@ from beanie import PydanticObjectId
 
 from app.models.person import Person
 from app.schemas.common import PageParams
+from app.utils.validators import strip_unresolved_placeholder
 
 
 class PersonRepository:
@@ -35,6 +36,13 @@ class PersonRepository:
         name yet, so a placeholder is used until the agent's identify_person tool call updates
         it) and by that identify_person tool itself.
         """
+        # A name is only ever *replaced* by another real name. Anything still shaped like an
+        # unsubstituted `{{token}}` is treated as "no name given" (see utils/validators.py):
+        # on 2026-09-22 this overwrote a real caller's name with the literal "{{full_name}}",
+        # and because agent-tool writes don't go through the admin PATCH endpoint there was no
+        # audit-log entry to trace it by.
+        full_name = strip_unresolved_placeholder(full_name)
+
         existing = await self.get_by_phone(phone_number)
         if existing:
             if full_name and existing.full_name != full_name:

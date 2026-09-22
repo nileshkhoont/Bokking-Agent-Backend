@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
 
 from app.core.constants import CallOutcome, CallScheduleStatus, CallStatus, CallType, Direction
+from app.core.exceptions import EdesyIntegrationError
 from app.core.logging import get_logger
+from app.integrations.edesy.client import edesy_client
 from app.integrations.edesy.webhook_events import CallEndedEvent, OutcomeInfo
 from app.models.appointment import Appointment
 from app.models.call import Call
@@ -95,6 +97,7 @@ class CallService:
                 f"{event.outcome.disposition or 'Unknown outcome'} ({event.outcome.endReason or 'n/a'})"
             )
         outcome = _map_outcome(event.outcome)
+        recording_url = await self._fetch_recording_url(call_sid)
 
         if call is None:
             if schedule:
@@ -128,6 +131,7 @@ class CallService:
                 duration_seconds=duration,
                 transcript=transcript_text,
                 transcript_summary=transcript_summary,
+                recording_url=recording_url,
                 edesy_call_id=call_sid,
                 outcome=outcome,
             )
@@ -148,6 +152,8 @@ class CallService:
             call.transcript = transcript_text
             call.transcript_summary = transcript_summary
             call.outcome = outcome
+            if recording_url:
+                call.recording_url = recording_url
             await call.save()
             logger.info("call_updated", call_id=str(call.id), edesy_call_id=call_sid, call_status=call_status)
 
@@ -162,6 +168,26 @@ class CallService:
         await self._link_appointment_created_during_call(call, start_time, end_time)
 
         return call
+
+    async def _fetch_recording_url(self, call_sid: str) -> str | None:
+        """call.ended's own webhook payload never includes a recording — confirmed against every
+        real payload captured so far. The only place one has actually been observed is
+        GET /api/v1/calls (list), matched here by callSid client-side since the endpoint's own
+        callSid filter appears to be silently ignored. Best-effort: any failure here (Edesy
+        outage, rate limit, unexpected shape) must not break webhook processing, so it's caught
+        and logged rather than raised — the call/transcript/outcome still get saved either way.
+        """
+        try:
+            calls = await edesy_client.list_calls()
+        except EdesyIntegrationError:
+            logger.warning("edesy_recording_lookup_failed", call_sid=call_sid)
+            return None
+
+        match = next((c for c in calls if c.callSid == call_sid), None)
+        if match is None:
+            logger.info("edesy_recording_not_found_in_list", call_sid=call_sid)
+            return None
+        return match.recordingUrl
 
     async def _link_appointment_created_during_call(
         self, call: Call, start_time: datetime | None, end_time: datetime | None

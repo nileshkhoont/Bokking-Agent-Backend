@@ -20,6 +20,7 @@ celery_app = Celery(
     include=[
         "app.workers.tasks.outbound_call_task",
         "app.workers.tasks.missed_call_retry_task",
+        "app.workers.tasks.recording_backfill_task",
     ],
 )
 
