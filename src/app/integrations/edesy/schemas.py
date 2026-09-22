@@ -66,9 +66,28 @@ class EdesyPlaceCallResponse(BaseModel):
         )
 
 
-class EdesyCallResponse(BaseModel):
-    callId: str
-    status: str
-    durationSeconds: int | None = None
+class EdesyCallSummary(BaseModel):
+    """One entry from `GET /api/v1/calls` — confirmed live 2026-09-22 (the shape
+    EdesyCallResponse/get_call guessed at was wrong: `GET /api/v1/calls/{id}` 404s for both
+    callSid and conversationId; the list endpoint below is the only place a recording has
+    actually been observed). recordingUrl is a Cloudflare-served link keyed by conversationId,
+    not callSid — `Cache-Control: max-age=31536000, immutable` on a real fetch suggests it's
+    durable, not a short-lived signed URL, but that's an observation, not a guarantee from Edesy.
+    """
+
+    conversationId: str
+    callSid: str
+    agentId: int | str | None = None
+    agentName: str | None = None
+    phoneNumber: str | None = None
+    status: str | None = None
+    duration: int | None = None
     recordingUrl: str | None = None
-    transcriptSummary: str | None = None
+    source: str | None = None
+    startTime: str | None = None
+    endTime: str | None = None
+
+
+class EdesyCallListResponse(BaseModel):
+    calls: list[EdesyCallSummary] = []
+    total: int | None = None

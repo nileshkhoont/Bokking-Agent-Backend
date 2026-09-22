@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -38,6 +39,25 @@ def _fits_and_aligns(local_time: time, window: WorkingHours, slot_duration_minut
 
 def _format_windows(windows: list[WorkingHours]) -> str:
     return ", ".join(f"{w.start}-{w.end}" for w in windows)
+
+
+@dataclass(slots=True)
+class DayAvailability:
+    """A day's open slots *plus why there are none*, when there are none.
+
+    An empty slot list on its own is ambiguous — a day the business is simply closed and a
+    working day whose slots are all taken look identical. On 2026-09-22 a caller asked about
+    25 and 27 September (both non-working days) and the agent could only say "koi slots khali
+    nathi", which sounds like the clinic is booked out rather than shut. Carrying the reason
+    alongside the slots lets the caller be told the useful thing — which days the clinic is
+    actually open — without the agent having to remember working_days from its prompt and drift
+    out of sync with business_config.
+    """
+
+    slots: list[datetime]
+    is_working_day: bool
+    closed_reason: str | None
+    working_days: list[str]
 
 
 class SlotService:
@@ -137,6 +157,16 @@ class SlotService:
         return SlotCheckResponse(available=True)
 
     async def list_available_slots(self, on_date: date) -> list[datetime]:
+        """Every bookable slot start time (UTC) on a given calendar date. Thin wrapper over
+        describe_day for callers that only need the times themselves.
+        """
+        return (await self.describe_day(on_date)).slots
+
+    async def get_working_days(self) -> list[str]:
+        config = await self._get_config()
+        return [day.capitalize() for day in config.working_days]
+
+    async def describe_day(self, on_date: date) -> DayAvailability:
         """Every bookable slot start time (UTC) on a given calendar date — generated live from
         business_config's working windows/slot_duration and filtered against real bookings and
         the same past/holiday/advance-window rules check_availability enforces for one candidate.
@@ -145,20 +175,29 @@ class SlotService:
         in one place regardless of caller).
         """
         config = await self._get_config()
+        working_days = [day.capitalize() for day in config.working_days]
+
+        def closed(reason: str) -> DayAvailability:
+            return DayAvailability(
+                slots=[], is_working_day=False, closed_reason=reason, working_days=working_days
+            )
+
         if not config.slot_duration_minutes:
-            return []
+            return DayAvailability(
+                slots=[], is_working_day=True, closed_reason=None, working_days=working_days
+            )
 
         tz = ZoneInfo(config.timezone) if config.timezone else BUSINESS_TIMEZONE
         local_midnight = datetime.combine(on_date, time.min, tzinfo=tz)
 
         weekday_name = WEEKDAY_NAMES[local_midnight.weekday()]
         if config.working_days and weekday_name not in [d.lower() for d in config.working_days]:
-            return []
+            return closed(f"Business is closed on {weekday_name.capitalize()}s")
 
         for holiday in config.holidays:
             holiday_local = to_business_timezone(ensure_utc(holiday.date), config.timezone)
             if holiday_local.date() == on_date:
-                return []
+                return closed(f"Business is closed for a holiday ({holiday.reason or 'holiday'})")
 
         now_utc = datetime.now(UTC)
         max_advance_utc = None
@@ -183,15 +222,19 @@ class SlotService:
                     continue
                 candidates.append(candidate_utc)
 
-        if not candidates:
-            return []
+        open_slots: list[datetime] = []
+        if candidates:
+            day_start_utc = local_midnight.astimezone(UTC)
+            day_end_utc = (local_midnight + timedelta(days=1)).astimezone(UTC)
+            booked = await appointment_repository.list_active_between(day_start_utc, day_end_utc)
+            booked_at = {a.appointment_datetime for a in booked}
+            open_slots = [c for c in candidates if c not in booked_at]
 
-        day_start_utc = local_midnight.astimezone(UTC)
-        day_end_utc = (local_midnight + timedelta(days=1)).astimezone(UTC)
-        booked = await appointment_repository.list_active_between(day_start_utc, day_end_utc)
-        booked_at = {a.appointment_datetime for a in booked}
-
-        return [c for c in candidates if c not in booked_at]
+        # A working day with nothing left is genuinely "fully booked" (or already past for
+        # today) — not closed. The caller needs to hear those two things differently.
+        return DayAvailability(
+            slots=open_slots, is_working_day=True, closed_reason=None, working_days=working_days
+        )
 
     async def check_callback_time_valid(self, requested_datetime: datetime) -> SlotCheckResponse:
         """Validates a person-requested callback datetime — working days/hours/holidays/max

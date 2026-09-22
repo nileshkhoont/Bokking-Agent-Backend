@@ -155,6 +155,139 @@ async def test_list_available_slots_excludes_booked_time(
 
 
 @pytest.mark.asyncio
+async def test_list_available_slots_distinguishes_closed_day_from_fully_booked_day(
+    client: AsyncClient, business_config: BusinessConfig
+):
+    """Regression test for the 2026-09-22 call where a caller asked about 25 and 27 September —
+    both non-working days — and was told only "koi slots khali nathi", which sounds like the
+    clinic is booked out rather than closed. An empty slots list must carry enough information
+    to tell the caller which it is, and which days actually are open.
+    """
+    monday = datetime.fromisoformat(_next_monday_9am())
+    closed_day = (monday + timedelta(days=6)).date()  # Sunday — not in business_config
+    assert "sunday" not in [d.lower() for d in business_config.working_days]
+
+    closed = await client.post(
+        "/api/v1/agent-tools/list-available-slots",
+        json={"date": closed_day.isoformat()},
+        headers=TOOL_HEADERS,
+    )
+    closed_data = closed.json()["data"]
+    assert closed_data["count"] == 0
+    assert closed_data["is_working_day"] is False
+    assert "Sunday" in closed_data["closed_reason"]
+    assert closed_data["working_days"]  # the agent has real days to offer instead
+
+    open_day = await client.post(
+        "/api/v1/agent-tools/list-available-slots",
+        json={"date": monday.date().isoformat()},
+        headers=TOOL_HEADERS,
+    )
+    open_data = open_day.json()["data"]
+    assert open_data["is_working_day"] is True
+    assert open_data["closed_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_check_slot_availability_reports_working_days_when_closed(
+    client: AsyncClient, business_config: BusinessConfig
+):
+    monday = datetime.fromisoformat(_next_monday_9am())
+    closed_dt = (monday + timedelta(days=6)).isoformat()  # Sunday
+
+    response = await client.post(
+        "/api/v1/agent-tools/check-slot-availability",
+        json={"requested_datetime": closed_dt},
+        headers=TOOL_HEADERS,
+    )
+    data = response.json()["data"]
+    assert data["available"] is False
+    assert data["working_days"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_appointment_via_fallback_to_active_appointment(
+    client: AsyncClient, business_config: BusinessConfig
+):
+    """Regression test for the 2026-09-22 incident: there was no cancel_appointment tool at all,
+    so the agent hallucinated a cancellation success message while the real appointment stayed
+    booked. This proves the new tool actually cancels the person's real active appointment even
+    without a valid appointment_id — the caller's own misremembered date must never matter.
+    """
+    booked = await client.post(
+        "/api/v1/agent-tools/book-appointment",
+        json={"phone_number": "+15557770000", "requested_datetime": _next_monday_9am()},
+        headers=TOOL_HEADERS,
+    )
+    appointment_id = booked.json()["data"]["appointment_id"]
+
+    cancelled = await client.post(
+        "/api/v1/agent-tools/cancel-appointment",
+        json={"phone_number": "+15557770000", "reason": "caller requested cancellation"},
+        headers=TOOL_HEADERS,
+    )
+    assert cancelled.json()["success"] is True
+    assert cancelled.json()["data"]["appointment_id"] == appointment_id
+    assert cancelled.json()["data"]["status"] == "cancelled"
+
+    appointment = await Appointment.get(appointment_id)
+    assert appointment.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_appointment_ignores_unresolved_template_reason(
+    client: AsyncClient, business_config: BusinessConfig
+):
+    """Regression test for the 2026-09-22 root cause: Edesy posts an *unfilled* optional Custom
+    Function parameter as the literal token rather than omitting the key, so appointment
+    6ab231d28faf632c4b6b04b4 was really stored with notes "Cancelled: {{reason}}". That's the same
+    mechanism that corrupted a Person's full_name — so no `{{...}}` token may ever be persisted,
+    on any field.
+    """
+    booked = await client.post(
+        "/api/v1/agent-tools/book-appointment",
+        json={"phone_number": "+15559990000", "requested_datetime": _next_monday_9am()},
+        headers=TOOL_HEADERS,
+    )
+    appointment_id = booked.json()["data"]["appointment_id"]
+
+    cancelled = await client.post(
+        "/api/v1/agent-tools/cancel-appointment",
+        json={"phone_number": "+15559990000", "reason": "{{reason}}"},
+        headers=TOOL_HEADERS,
+    )
+    assert cancelled.json()["success"] is True
+
+    appointment = await Appointment.get(appointment_id)
+    assert appointment.status == "cancelled"
+    assert "{{" not in (appointment.notes or "")
+
+
+@pytest.mark.asyncio
+async def test_unresolved_template_phone_number_is_rejected_not_persisted(client: AsyncClient):
+    """A *required* field can't be silently dropped: if the dashboard mapping for phone_number is
+    wrong, that must fail loudly instead of creating a junk Person keyed by the literal token.
+    """
+    response = await client.post(
+        "/api/v1/agent-tools/identify-person",
+        json={"phone_number": "{{call.phone_number}}"},
+        headers=TOOL_HEADERS,
+    )
+    assert response.status_code == 422
+    assert await Person.find_one(Person.phone_number == "{{call.phone_number}}") is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_appointment_with_no_active_appointment_fails_cleanly(client: AsyncClient):
+    response = await client.post(
+        "/api/v1/agent-tools/cancel-appointment",
+        json={"phone_number": "+15557780000"},
+        headers=TOOL_HEADERS,
+    )
+    assert response.json()["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_log_callback_request_rejects_outside_business_hours(
     client: AsyncClient, business_config: BusinessConfig
 ):

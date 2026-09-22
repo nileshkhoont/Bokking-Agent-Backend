@@ -16,7 +16,7 @@ from app.core.logging import get_logger
 from app.integrations.edesy.schemas import (
     EdesyAgentResponse,
     EdesyAgentUpdateRequest,
-    EdesyCallResponse,
+    EdesyCallSummary,
     EdesyPlaceCallRequest,
     EdesyPlaceCallResponse,
 )
@@ -125,9 +125,17 @@ class EdesyClient:
             )
         return result
 
-    async def get_call(self, call_id: str) -> EdesyCallResponse:
-        response = await self._request("GET", f"/api/v1/calls/{call_id}")
-        return EdesyCallResponse.model_validate(response.json())
+    async def list_calls(self, limit: int = 50) -> list[EdesyCallSummary]:
+        """The only place a call's recordingUrl has actually been observed — confirmed live
+        2026-09-22. `GET /api/v1/calls/{id}` (singular) 404s for both callSid and conversationId,
+        so despite the extra fetch this list is the real, working way to get one. The `callSid`
+        query param appears to be silently ignored (a filtered request returned the same
+        unfiltered results as an unfiltered one) — filter by callSid client-side instead.
+        """
+        response = await self._request("GET", f"/api/v1/calls?limit={limit}")
+        body = response.json()
+        calls = body.get("data", {}).get("calls", [])
+        return [EdesyCallSummary.model_validate(c) for c in calls]
 
 
 edesy_client = EdesyClient()

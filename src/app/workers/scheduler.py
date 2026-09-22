@@ -15,4 +15,8 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.missed_call_retry_task.sweep_stuck_schedules",
         "schedule": 600.0,  # every 10 minutes
     },
+    "backfill-missing-call-recordings": {
+        "task": "app.workers.tasks.recording_backfill_task.backfill_missing_recordings",
+        "schedule": 300.0,  # every 5 minutes
+    },
 }
