@@ -39,11 +39,20 @@ def _to_out(schedule: CallSchedule, person: Person | None = None) -> CallSchedul
 async def list_call_schedules(
     status: CallScheduleStatus | None = Query(default=None),
     call_purpose: CallPurpose | None = Query(default=None),
+    q: str | None = Query(default=None, description="Search by person name or phone number"),
     page: PageParams = Depends(get_page_params),
     _: Admin = Depends(get_current_admin),
 ) -> Page[CallScheduleOut]:
     """The outbound calling queue view (pending/completed/missed) — PDF §3."""
-    items, total = await call_schedule_repository.list_filtered(page, status=status, call_purpose=call_purpose)
+    person_ids: list[str] | None = None
+    if q:
+        person_ids = await person_repository.find_ids_matching(q)
+        if not person_ids:
+            return build_page([], 0, page)
+
+    items, total = await call_schedule_repository.list_filtered(
+        page, status=status, call_purpose=call_purpose, person_ids=person_ids
+    )
     persons = await person_repository.get_many_by_ids({s.person_id for s in items})
     return build_page([_to_out(s, persons.get(s.person_id)) for s in items], total, page)
 

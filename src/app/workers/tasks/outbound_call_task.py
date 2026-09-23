@@ -51,8 +51,15 @@ async def dispatch_due_calls_once() -> int:
             "appointment_id": schedule.appointment_id,
             "admin_instructions": render_admin_instructions_context(schedule.admin_instructions),
         }
-        previous_appointment = await appointment_repository.get_active_for_person(schedule.person_id)
-        variables = build_call_variables(person, previous_appointment)
+        upcoming_appointments = await appointment_repository.list_upcoming_for_person(schedule.person_id)
+        # Only bother looking for a past ("expired") appointment when there's nothing upcoming —
+        # it's only ever used for that branch (see build_call_variables).
+        last_expired_appointment = (
+            None
+            if upcoming_appointments
+            else await appointment_repository.get_active_for_person(schedule.person_id)
+        )
+        variables = build_call_variables(person, upcoming_appointments, last_expired_appointment)
 
         try:
             result = await edesy_client.place_call(

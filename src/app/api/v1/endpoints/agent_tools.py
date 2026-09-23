@@ -19,14 +19,20 @@ from pydantic import BaseModel, BeforeValidator
 
 from app.core.constants import BookingSource
 from app.core.exceptions import AppError
+from app.core.logging import get_logger
 from app.core.tool_auth import require_tool_secret
+from app.models.appointment import Appointment
+from app.models.person import Person
+from app.repositories.call_schedule_repository import call_schedule_repository
 from app.repositories.person_repository import person_repository
 from app.schemas.call import ToolResponse
 from app.services.appointment_service import appointment_service
 from app.services.callback_service import callback_service
 from app.services.slot_service import slot_service
-from app.utils.datetime_utils import format_ist_human, format_ist_time
+from app.utils.datetime_utils import ensure_utc, format_ist_human, format_ist_time
 from app.utils.validators import is_unresolved_placeholder, strip_unresolved_placeholder
+
+logger = get_logger(__name__)
 
 router = APIRouter(
     prefix="/agent-tools", tags=["agent_tools"], dependencies=[Depends(require_tool_secret)]
@@ -54,30 +60,243 @@ OptionalToolStr = Annotated[str | None, BeforeValidator(strip_unresolved_placeho
 RequiredToolStr = Annotated[str, BeforeValidator(_reject_unresolved)]
 
 
+def _strip_placeholder_before_datetime(value: object) -> object:
+    """Same reasoning as strip_unresolved_placeholder, for an optional datetime field — Edesy
+    posts the literal unrendered token when the model leaves it blank, which is not a parseable
+    datetime and would 422 every call that legitimately has nothing to send here, so it must be
+    normalised to None before Pydantic's datetime parser ever sees it.
+    """
+    if isinstance(value, str) and is_unresolved_placeholder(value):
+        return None
+    return value
+
+
+OptionalToolDateTime = Annotated[datetime | None, BeforeValidator(_strip_placeholder_before_datetime)]
+
+
+async def _resolve_person_for_call(
+    phone_number: str,
+    edesy_call_id: str | None,
+    full_name: str | None = None,
+    *,
+    overwrite_existing_name: bool = True,
+) -> Person:
+    """The authoritative identity for every agent-tool call that reads or changes appointment
+    data — this is what actually enforces "an appointment can only be reached from the phone
+    number the current call is really with", not just prompt wording.
+
+    For an OUTBOUND call, edesy_call_id (Edesy's own {{call.sid}} call-context token — never an
+    LLM-fillable parameter, same as phone_number is meant to be) is looked up against
+    call_schedules, which was written by OUR OWN dispatch code
+    (workers/tasks/outbound_call_task.py) the moment we placed the call — before Edesy, the LLM,
+    or the person on the other end of the line were ever involved. When a match exists, THAT
+    schedule's person is used and payload.phone_number is not consulted at all. This is
+    deliberate: if a caller says "cancel my friend's appointment, his number is ...", or if a
+    dashboard's Request Body ever mistakenly exposes phone_number as something the model can
+    fill in, it still cannot change whose appointment gets looked up, rescheduled, or cancelled
+    on an outbound call — the schedule fixes that before the call starts.
+
+    Falls back to phone_number-based lookup otherwise. That fallback is the ONLY path available
+    for INBOUND calls: Edesy's platform only ever fires one webhook, call.ended, AFTER the call
+    is already over (see integrations/edesy/webhook_events.py) — there is no call.started
+    signal, so nothing exists server-side to independently verify an inbound caller's number
+    against before the call happens. phone_number there is Edesy's own {{call.phone_number}}
+    call-context token, resolved by Edesy's telephony layer from the real caller ID — trusted the
+    same way it always has been, which is why it is critical that every tool's Request Body in
+    the Edesy dashboard maps phone_number to that token and does NOT list it as an LLM-fillable
+    parameter (see the prompt-update guidance delivered alongside this change).
+
+    overwrite_existing_name: False for identify_person specifically (see its own call site) —
+    2026-09-23 incident: a caller asked to check a FRIEND's appointment and stated the friend's
+    name; the model passed that name straight through as full_name. Because identity here always
+    resolves to the CALLER's own real phone number/schedule (exactly as designed above), that
+    silently renamed the caller's own record to the friend's name — and identify_person's
+    response then echoed that new name straight back, making the model believe it actually WAS
+    looking at the friend's data, compounding the confusion for the rest of the call. A brand
+    new Person has no existing name to protect, so full_name is still used to seed one on first
+    contact either way — only an UPDATE to an already-known name is ever skipped.
+    """
+    if edesy_call_id:
+        schedule = await call_schedule_repository.get_by_edesy_call_id(edesy_call_id)
+        if schedule is not None:
+            person = await person_repository.get_by_id(schedule.person_id)
+            if person is not None:
+                if person.phone_number != phone_number:
+                    logger.warning(
+                        "agent_tool_phone_number_mismatch_ignored",
+                        edesy_call_id=edesy_call_id,
+                        scheduled_phone_number=person.phone_number,
+                        payload_phone_number=phone_number,
+                    )
+                if overwrite_existing_name:
+                    return await person_repository.apply_name_if_given(person, full_name)
+                return person
+
+    if overwrite_existing_name:
+        return await person_repository.get_or_create_by_phone(phone_number, full_name)
+
+    existing = await person_repository.get_by_phone(phone_number)
+    if existing is not None:
+        return existing
+    return await person_repository.get_or_create_by_phone(phone_number, full_name)
+
+
+def _serialize_upcoming(appointments: list[Appointment]) -> list[dict]:
+    """Every upcoming appointment, soonest first — how identify_person exposes the full list,
+    and what a "multiple upcoming appointments" disambiguation response carries back too, so the
+    agent always has real appointment_ids to act on rather than a date it half-remembers from
+    earlier in the call.
+    """
+    return [
+        {
+            "appointment_id": str(a.id),
+            "appointment_datetime": a.appointment_datetime.isoformat(),
+            "appointment_datetime_ist": format_ist_human(a.appointment_datetime),
+        }
+        for a in sorted(appointments, key=lambda a: a.appointment_datetime)
+    ]
+
+
+async def _resolve_appointment_id_or_disambiguate(
+    person: Person,
+    requested_appointment_id: str | None,
+    action: str,
+    expected_appointment_datetime: datetime | None = None,
+) -> tuple[str | None, ToolResponse | None]:
+    """Shared by reschedule_appointment and cancel_appointment. Returns (appointment_id, None)
+    when it's safe to proceed, or (None, an early ToolResponse to return as-is) when it isn't.
+
+    A caller can have more than one upcoming appointment — if the agent didn't pass a valid
+    appointment_id (e.g. it never called identify_person, or the caller described one from
+    memory instead of picking from a list), guessing which of several upcoming appointments they
+    meant would risk rescheduling/cancelling the wrong one. That's only ambiguous when there are
+    2+; with zero there's nothing to act on, and with exactly one there's nothing to disambiguate.
+
+    expected_appointment_datetime is the hard technical gate on top of that, added after a
+    prompt-only "please double-check the id" instruction (2026-09-23) still wasn't enough: three
+    times now in real calls the agent correctly SPOKE the right time to the caller but sent a
+    DIFFERENT appointment's id to the tool, silently acting on the wrong appointment while the
+    one the caller actually meant sat untouched. The first version of this check only ran when
+    the agent chose to send expected_appointment_datetime — which it can simply forget to do
+    (still optional in the Edesy dashboard's Parameters, or just not top of mind), and on the
+    very next real call after this guard shipped, it did exactly that, and the guard never fired.
+    So the check is no longer opt-in: whenever this person actually HAS more than one upcoming
+    appointment, expected_appointment_datetime is mandatory, full stop, regardless of whether the
+    agent thinks it's needed — deciding "was this ambiguous?" is taken out of the agent's hands
+    entirely and driven by the real data instead. Only when there is a single unambiguous
+    appointment (nothing to mismatch against) can it be omitted.
+    """
+    upcoming = await appointment_service.list_upcoming_for_person(str(person.id))
+
+    if requested_appointment_id and PydanticObjectId.is_valid(requested_appointment_id):
+        if expected_appointment_datetime is None:
+            if len(upcoming) > 1:
+                return None, ToolResponse(
+                    success=False,
+                    message=(
+                        "This person has more than one upcoming appointment, so "
+                        "expected_appointment_datetime is required together with appointment_id "
+                        "— it was not provided. Find the entry in upcoming_appointments below "
+                        "matching what you just confirmed with the caller and send both its "
+                        "appointment_id and its appointment_datetime."
+                    ),
+                    data={"upcoming_appointments": _serialize_upcoming(upcoming)},
+                )
+            return requested_appointment_id, None
+
+        appointment = await appointment_service.get_by_id(requested_appointment_id)
+        if appointment is None or appointment.person_id != str(person.id):
+            # Never touch a row that isn't this verified caller's own — should be unreachable
+            # given phone-number binding, but no silent fallthrough either way.
+            return None, ToolResponse(
+                success=False, message=f"No active appointment found to {action}"
+            )
+        expected_utc = ensure_utc(expected_appointment_datetime)
+        if appointment.appointment_datetime != expected_utc:
+            logger.warning(
+                "agent_tool_appointment_id_datetime_mismatch",
+                action=action,
+                appointment_id=requested_appointment_id,
+                actual_datetime=appointment.appointment_datetime.isoformat(),
+                expected_datetime=expected_utc.isoformat(),
+            )
+            return None, ToolResponse(
+                success=False,
+                message=(
+                    "appointment_id does not match expected_appointment_datetime — this is "
+                    "not the appointment you just confirmed with the caller. Find the entry "
+                    "in upcoming_appointments below whose appointment_datetime_ist equals "
+                    f"{format_ist_human(expected_utc)} and use THAT entry's appointment_id."
+                ),
+                data={"upcoming_appointments": _serialize_upcoming(upcoming)},
+            )
+        return requested_appointment_id, None
+
+    if not upcoming:
+        return None, ToolResponse(success=False, message=f"No active appointment found to {action}")
+    if len(upcoming) == 1:
+        return str(upcoming[0].id), None
+
+    return None, ToolResponse(
+        success=False,
+        message=(
+            f"This person has {len(upcoming)} upcoming appointments — ask the caller which one "
+            f"they mean (read back each appointment_datetime_ist below), then call this again "
+            f"with that appointment's appointment_id AND its appointment_datetime as "
+            f"expected_appointment_datetime."
+        ),
+        data={"upcoming_appointments": _serialize_upcoming(upcoming)},
+    )
+
+
 class IdentifyPersonRequest(BaseModel):
     phone_number: RequiredToolStr
+    # Only ever used to seed a brand-new Person's name on first contact — never to overwrite an
+    # existing one. See _resolve_person_for_call's overwrite_existing_name docstring: this tool
+    # is a lookup, called well before any "is this really your own name?" confirmation exists
+    # elsewhere in a flow, so it must never have the power to rename someone who's already known.
     full_name: OptionalToolStr = None
+    # Same reasoning as BookAppointmentRequest.edesy_call_id — passing this lets identity be
+    # resolved from the verified outbound call_schedule instead of the phone_number field alone.
+    edesy_call_id: OptionalToolStr = None
 
 
 @router.post("/identify-person", response_model=ToolResponse)
 async def identify_person(payload: IdentifyPersonRequest) -> ToolResponse:
-    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
-    active_appointment = await appointment_service.get_active_for_person(str(person.id))
+    person = await _resolve_person_for_call(
+        payload.phone_number,
+        payload.edesy_call_id,
+        payload.full_name,
+        overwrite_existing_name=False,
+    )
+    # Only ever future appointments — a booked-but-past appointment must never be reported as
+    # something the caller "still has" (2026-09-23 finding).
+    upcoming = await appointment_service.list_upcoming_for_person(str(person.id))
+    # The most recently BOOKED one (not necessarily the soonest date) — kept as flat top-level
+    # fields for backward-compatible single-appointment mentions (Step 0's opening line, Step
+    # 3C Turn 2). For anything involving more than one appointment, use upcoming_appointments.
+    most_recently_booked = max(upcoming, key=lambda a: a.created_at) if upcoming else None
 
     return ToolResponse(
         success=True,
         data={
             "person_id": str(person.id),
             "full_name": person.full_name,
-            "has_active_appointment": active_appointment is not None,
-            "appointment_id": str(active_appointment.id) if active_appointment else None,
+            "has_active_appointment": bool(upcoming),
+            "appointment_id": str(most_recently_booked.id) if most_recently_booked else None,
             "appointment_datetime": (
-                active_appointment.appointment_datetime.isoformat() if active_appointment else None
+                most_recently_booked.appointment_datetime.isoformat() if most_recently_booked else None
             ),
             # Speak this — pre-formatted in India Standard Time, the business's operating zone.
             "appointment_datetime_ist": (
-                format_ist_human(active_appointment.appointment_datetime) if active_appointment else None
+                format_ist_human(most_recently_booked.appointment_datetime)
+                if most_recently_booked
+                else None
             ),
+            # Every upcoming appointment, soonest first, with its real appointment_id — use this
+            # to match whichever one the caller describes, and to reschedule/cancel the correct
+            # one when there's more than one. Never guess an id or reuse one from memory.
+            "upcoming_appointments": _serialize_upcoming(upcoming),
         },
     )
 
@@ -167,7 +386,9 @@ class BookAppointmentRequest(BaseModel):
 
 @router.post("/book-appointment", response_model=ToolResponse)
 async def book_appointment(payload: BookAppointmentRequest) -> ToolResponse:
-    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
+    person = await _resolve_person_for_call(
+        payload.phone_number, payload.edesy_call_id, payload.full_name
+    )
     try:
         appointment = await appointment_service.book_first_time(
             person_id=str(person.id),
@@ -198,20 +419,32 @@ class RescheduleAppointmentRequest(BaseModel):
     phone_number: RequiredToolStr
     new_appointment_datetime: datetime
     appointment_id: OptionalToolStr = None
+    # The CURRENT (before-change) appointment's own appointment_datetime — send this whenever
+    # appointment_id came from picking one out of several in upcoming_appointments (never needed
+    # when there's only one appointment to begin with). The backend verifies appointment_id
+    # actually has this exact appointment_datetime before doing anything, and refuses instead of
+    # silently rescheduling the wrong one if they don't match. Added 2026-09-23 after a real call
+    # confirmed "1:00 PM" out loud to the caller but sent a different appointment's id — this is
+    # what catches that the moment it happens, instead of relying on getting it right unchecked.
+    expected_appointment_datetime: OptionalToolDateTime = None
     edesy_call_id: OptionalToolStr = None  # same reasoning as BookAppointmentRequest.edesy_call_id
     full_name: OptionalToolStr = None  # same reasoning as BookAppointmentRequest.full_name
 
 
 @router.post("/reschedule-appointment", response_model=ToolResponse)
 async def reschedule_appointment(payload: RescheduleAppointmentRequest) -> ToolResponse:
-    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
+    person = await _resolve_person_for_call(
+        payload.phone_number, payload.edesy_call_id, payload.full_name
+    )
 
-    appointment_id = payload.appointment_id
-    if not appointment_id or not PydanticObjectId.is_valid(appointment_id):
-        active = await appointment_service.get_active_for_person(str(person.id))
-        if active is None:
-            return ToolResponse(success=False, message="No active appointment found to reschedule")
-        appointment_id = str(active.id)
+    appointment_id, early_response = await _resolve_appointment_id_or_disambiguate(
+        person,
+        payload.appointment_id,
+        action="reschedule",
+        expected_appointment_datetime=payload.expected_appointment_datetime,
+    )
+    if early_response is not None:
+        return early_response
 
     try:
         appointment = await appointment_service.reschedule_existing(
@@ -242,19 +475,25 @@ class CancelAppointmentRequest(BaseModel):
     # cancelled nothing or, worse, silently done nothing while claiming success).
     phone_number: RequiredToolStr
     appointment_id: OptionalToolStr = None
+    # Same reasoning as RescheduleAppointmentRequest.expected_appointment_datetime — send this
+    # whenever appointment_id was picked out of a multi-appointment list.
+    expected_appointment_datetime: OptionalToolDateTime = None
     reason: OptionalToolStr = None
+    edesy_call_id: OptionalToolStr = None  # same reasoning as BookAppointmentRequest.edesy_call_id
 
 
 @router.post("/cancel-appointment", response_model=ToolResponse)
 async def cancel_appointment(payload: CancelAppointmentRequest) -> ToolResponse:
-    person = await person_repository.get_or_create_by_phone(payload.phone_number)
+    person = await _resolve_person_for_call(payload.phone_number, payload.edesy_call_id)
 
-    appointment_id = payload.appointment_id
-    if not appointment_id or not PydanticObjectId.is_valid(appointment_id):
-        active = await appointment_service.get_active_for_person(str(person.id))
-        if active is None:
-            return ToolResponse(success=False, message="No active appointment found to cancel")
-        appointment_id = str(active.id)
+    appointment_id, early_response = await _resolve_appointment_id_or_disambiguate(
+        person,
+        payload.appointment_id,
+        action="cancel",
+        expected_appointment_datetime=payload.expected_appointment_datetime,
+    )
+    if early_response is not None:
+        return early_response
 
     try:
         appointment = await appointment_service.cancel(appointment_id, reason=payload.reason)
@@ -285,11 +524,14 @@ class LogCallbackRequest(BaseModel):
     source_call_id: OptionalToolStr = None
     appointment_id: OptionalToolStr = None
     full_name: OptionalToolStr = None  # same reasoning as BookAppointmentRequest.full_name
+    edesy_call_id: OptionalToolStr = None  # same reasoning as BookAppointmentRequest.edesy_call_id
 
 
 @router.post("/log-callback-request", response_model=ToolResponse)
 async def log_callback_request(payload: LogCallbackRequest) -> ToolResponse:
-    person = await person_repository.get_or_create_by_phone(payload.phone_number, payload.full_name)
+    person = await _resolve_person_for_call(
+        payload.phone_number, payload.edesy_call_id, payload.full_name
+    )
     try:
         schedule = await callback_service.create_callback(
             person_id=str(person.id),

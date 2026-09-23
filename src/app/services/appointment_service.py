@@ -110,8 +110,14 @@ class AppointmentService:
         await appointment.save()
         return appointment
 
+    async def get_by_id(self, appointment_id: str) -> Appointment | None:
+        return await appointment_repository.get_by_id(appointment_id)
+
     async def get_active_for_person(self, person_id: str) -> Appointment | None:
         return await appointment_repository.get_active_for_person(person_id)
+
+    async def list_upcoming_for_person(self, person_id: str) -> list[Appointment]:
+        return await appointment_repository.list_upcoming_for_person(person_id)
 
 
 appointment_service = AppointmentService()

@@ -48,10 +48,17 @@ async def list_calls(
     call_status: CallStatus | None = Query(default=None),
     outcome: CallOutcome | None = Query(default=None),
     person_id: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="Search by person name or phone number"),
     page: PageParams = Depends(get_page_params),
     _: Admin = Depends(get_current_admin),
 ) -> Page[CallOut]:
     """Admin Call Management: date-wise list with type/status/outcome filters (PDF §2.2)."""
+    person_ids: list[str] | None = None
+    if q:
+        person_ids = await person_repository.find_ids_matching(q)
+        if not person_ids:
+            return build_page([], 0, page)
+
     items, total = await call_repository.list_filtered(
         page,
         date_from=date_from,
@@ -60,6 +67,7 @@ async def list_calls(
         call_status=call_status,
         outcome=outcome,
         person_id=person_id,
+        person_ids=person_ids,
     )
     persons = await person_repository.get_many_by_ids({c.person_id for c in items})
     return build_page([_to_out(c, persons.get(c.person_id)) for c in items], total, page)

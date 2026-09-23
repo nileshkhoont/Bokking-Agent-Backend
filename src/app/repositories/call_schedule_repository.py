@@ -53,12 +53,15 @@ class CallScheduleRepository:
         page: PageParams,
         status: CallScheduleStatus | None = None,
         call_purpose: CallPurpose | None = None,
+        person_ids: list[str] | None = None,
     ) -> tuple[list[CallSchedule], int]:
         conditions: list = [CallSchedule.is_deleted == False]  # noqa: E712
         if status:
             conditions.append(CallSchedule.status == status)
         if call_purpose:
             conditions.append(CallSchedule.call_purpose == call_purpose)
+        if person_ids is not None:
+            conditions.append({"person_id": {"$in": person_ids}})
 
         query = CallSchedule.find(*conditions)
         total = await query.count()
