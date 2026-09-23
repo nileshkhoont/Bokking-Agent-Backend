@@ -28,6 +28,7 @@ class CallRepository:
         call_status: CallStatus | None = None,
         outcome: CallOutcome | None = None,
         person_id: str | None = None,
+        person_ids: list[str] | None = None,
     ) -> tuple[list[Call], int]:
         conditions: list = [Call.is_deleted == False]  # noqa: E712
         if call_type:
@@ -38,6 +39,8 @@ class CallRepository:
             conditions.append(Call.outcome == outcome)
         if person_id:
             conditions.append(Call.person_id == person_id)
+        if person_ids is not None:
+            conditions.append({"person_id": {"$in": person_ids}})
         if date_from or date_to:
             range_query: dict = {}
             if date_from:

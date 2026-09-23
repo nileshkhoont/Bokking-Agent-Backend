@@ -31,26 +31,36 @@ class PersonRepository:
             Person.phone_number == phone_number, Person.is_deleted == False  # noqa: E712
         )
 
+    async def apply_name_if_given(self, person: Person, full_name: str | None) -> Person:
+        """Update-if-different name logic, factored out so any path that already has a resolved
+        Person (not just get_or_create_by_phone below) — e.g. agent_tools.py's
+        _resolve_person_for_call, which finds the Person via a verified call_schedule rather than
+        by phone number — can still apply a caller-stated name the same safe way.
+
+        A name is only ever *replaced* by another real name. Anything still shaped like an
+        unsubstituted `{{token}}` is treated as "no name given" (see utils/validators.py):
+        on 2026-09-22 this overwrote a real caller's name with the literal "{{full_name}}",
+        and because agent-tool writes don't go through the admin PATCH endpoint there was no
+        audit-log entry to trace it by.
+        """
+        full_name = strip_unresolved_placeholder(full_name)
+        if full_name and person.full_name != full_name:
+            person.full_name = full_name
+            await person.save()
+        return person
+
     async def get_or_create_by_phone(self, phone_number: str, full_name: str | None = None) -> Person:
         """Used both by the inbound call.started webhook handler (we don't know the caller's
         name yet, so a placeholder is used until the agent's identify_person tool call updates
         it) and by that identify_person tool itself.
         """
-        # A name is only ever *replaced* by another real name. Anything still shaped like an
-        # unsubstituted `{{token}}` is treated as "no name given" (see utils/validators.py):
-        # on 2026-09-22 this overwrote a real caller's name with the literal "{{full_name}}",
-        # and because agent-tool writes don't go through the admin PATCH endpoint there was no
-        # audit-log entry to trace it by.
-        full_name = strip_unresolved_placeholder(full_name)
-
         existing = await self.get_by_phone(phone_number)
         if existing:
-            if full_name and existing.full_name != full_name:
-                existing.full_name = full_name
-                await existing.save()
-            return existing
+            return await self.apply_name_if_given(existing, full_name)
 
-        person = Person(full_name=full_name or phone_number, phone_number=phone_number)
+        person = Person(
+            full_name=strip_unresolved_placeholder(full_name) or phone_number, phone_number=phone_number
+        )
         await person.insert()
         return person
 
@@ -70,6 +80,18 @@ class PersonRepository:
             .to_list()
         )
         return items, total
+
+    async def find_ids_matching(self, query: str) -> list[str]:
+        """Same $text/regex match as search() above, but returns every matching id unpaginated —
+        used by the calls/appointments/call-schedules list endpoints to search "by person" (they
+        only store person_id, not a denormalized name/phone) by first resolving the query to a
+        set of person ids and then filtering their own collection with {"person_id": {"$in": ...}}.
+        """
+        persons = await Person.find(
+            Person.is_deleted == False,  # noqa: E712
+            {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": query}}]},
+        ).to_list()
+        return [str(p.id) for p in persons]
 
 
 person_repository = PersonRepository()

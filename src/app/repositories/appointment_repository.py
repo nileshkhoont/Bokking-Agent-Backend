@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
 
@@ -31,6 +31,28 @@ class AppointmentRepository:
             )
             .sort(-Appointment.appointment_datetime)
             .first_or_none()
+        )
+
+    async def list_upcoming_for_person(self, person_id: str) -> list[Appointment]:
+        """Every active (booked/rescheduled) appointment for this person that is still in the
+        future, soonest first — never a past one. get_active_for_person above (kept as-is for
+        the "no upcoming — was their last one expired?" check) sorts by furthest-future
+        appointment_datetime, so with two+ upcoming appointments it silently returns whichever
+        is farthest away rather than the one actually booked most recently, and with zero
+        upcoming ones it happily returns a booked-but-past appointment as if it still counted.
+        Both were found 2026-09-23 to make the agent misreport whether/which appointment a
+        caller has. Anything that means "does this person currently have an appointment" or
+        "which ones can they reschedule/cancel" must use this method, not get_active_for_person.
+        """
+        return (
+            await Appointment.find(
+                Appointment.person_id == person_id,
+                Appointment.is_deleted == False,  # noqa: E712
+                {"status": {"$in": [s.value for s in ACTIVE_STATUSES]}},
+                Appointment.appointment_datetime > datetime.now(UTC),
+            )
+            .sort(+Appointment.appointment_datetime)
+            .to_list()
         )
 
     async def exists_active_at(
@@ -67,11 +89,16 @@ class AppointmentRepository:
         )
 
     async def list_filtered(
-        self, page: PageParams, status: AppointmentStatus | None = None
+        self,
+        page: PageParams,
+        status: AppointmentStatus | None = None,
+        person_ids: list[str] | None = None,
     ) -> tuple[list[Appointment], int]:
         conditions: list = [Appointment.is_deleted == False]  # noqa: E712
         if status:
             conditions.append(Appointment.status == status)
+        if person_ids is not None:
+            conditions.append({"person_id": {"$in": person_ids}})
 
         query = Appointment.find(*conditions)
         total = await query.count()

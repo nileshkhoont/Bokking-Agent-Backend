@@ -46,10 +46,17 @@ def _to_out(appointment: Appointment, person: Person | None = None) -> Appointme
 @router.get("", response_model=Page[AppointmentOut])
 async def list_appointments(
     status: AppointmentStatus | None = Query(default=None),
+    q: str | None = Query(default=None, description="Search by person name or phone number"),
     page: PageParams = Depends(get_page_params),
     _: Admin = Depends(get_current_admin),
 ) -> Page[AppointmentOut]:
-    items, total = await appointment_repository.list_filtered(page, status=status)
+    person_ids: list[str] | None = None
+    if q:
+        person_ids = await person_repository.find_ids_matching(q)
+        if not person_ids:
+            return build_page([], 0, page)
+
+    items, total = await appointment_repository.list_filtered(page, status=status, person_ids=person_ids)
     persons = await person_repository.get_many_by_ids({a.person_id for a in items})
     return build_page([_to_out(a, persons.get(a.person_id)) for a in items], total, page)
 

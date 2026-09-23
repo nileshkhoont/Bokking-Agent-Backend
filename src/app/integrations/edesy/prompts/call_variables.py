@@ -10,25 +10,46 @@ The upcoming/expired decision is computed here, in UTC-aware Python, rather than
 language models have no reliable notion of "today's date" mid-conversation, so doing date math in
 the prompt would be guesswork. This mirrors render_admin_instructions_context's approach of
 pre-rendering call-specific text server-side instead of asking the agent to derive it.
-"""
 
-from datetime import UTC, datetime
+These pre-call variables only ever describe ONE appointment — the one Step 0 opens with — because
+they are plain string substitution, computed before the call starts and before any tool has run.
+A person can have several upcoming appointments (see appointment_repository.list_upcoming_for_
+person); the full list, with real appointment_ids the agent can act on, is deliberately NOT sent
+here. It's fetched live via the identify_person tool call instead, so it can never go stale
+between when this call was scheduled and when it's actually answered, and so the agent has one
+single source of truth for "which appointments exist" and "which id is which" throughout the
+call, the same way Step 3C's cancellation flow already works.
+"""
 
 from app.models.appointment import Appointment
 from app.models.person import Person
 from app.utils.datetime_utils import format_ist_human
 
 
-def build_call_variables(person: Person, appointment: Appointment | None) -> dict[str, str]:
-    if appointment is None:
+def build_call_variables(
+    person: Person,
+    upcoming_appointments: list[Appointment],
+    last_expired_appointment: Appointment | None = None,
+) -> dict[str, str]:
+    """upcoming_appointments: every active appointment still in the future (see
+    appointment_repository.list_upcoming_for_person) — pass [] if there are none.
+    last_expired_appointment: only consulted when upcoming_appointments is empty; the caller's
+    most recent past appointment, if any (e.g. from appointment_repository.get_active_for_person,
+    which — precisely because nothing upcoming exists — can only return a past one here).
+    """
+    if upcoming_appointments:
+        previous_status = "upcoming"
+        # "Most recently booked" = latest created_at, NOT the furthest-away appointment_datetime
+        # — a caller who books Sept 26 and then, in a later call, books Sept 24 as well, should
+        # hear about the Sept 24 one in Step 0, since that's the one they actually booked last.
+        most_recently_booked = max(upcoming_appointments, key=lambda a: a.created_at)
+        previous_datetime_ist = format_ist_human(most_recently_booked.appointment_datetime)
+    elif last_expired_appointment is not None:
+        previous_status = "expired"
+        previous_datetime_ist = format_ist_human(last_expired_appointment.appointment_datetime)
+    else:
         previous_status = "none"
         previous_datetime_ist = ""
-    elif appointment.appointment_datetime > datetime.now(UTC):
-        previous_status = "upcoming"
-        previous_datetime_ist = format_ist_human(appointment.appointment_datetime)
-    else:
-        previous_status = "expired"
-        previous_datetime_ist = format_ist_human(appointment.appointment_datetime)
 
     return {
         "person_name": person.full_name or "",
