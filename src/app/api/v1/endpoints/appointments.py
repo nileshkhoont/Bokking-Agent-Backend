@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_admin, get_page_params
@@ -20,6 +22,7 @@ from app.schemas.common import Page, PageParams
 from app.services.appointment_service import appointment_service
 from app.services.audit_service import audit_service
 from app.services.slot_service import slot_service
+from app.utils.datetime_utils import ensure_utc
 from app.utils.pagination import build_page
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
@@ -47,6 +50,8 @@ def _to_out(appointment: Appointment, person: Person | None = None) -> Appointme
 async def list_appointments(
     status: AppointmentStatus | None = Query(default=None),
     q: str | None = Query(default=None, description="Search by person name or phone number"),
+    date_from: datetime | None = Query(default=None, description="appointment_datetime >= (inclusive)"),
+    date_to: datetime | None = Query(default=None, description="appointment_datetime <= (inclusive)"),
     page: PageParams = Depends(get_page_params),
     _: Admin = Depends(get_current_admin),
 ) -> Page[AppointmentOut]:
@@ -56,7 +61,13 @@ async def list_appointments(
         if not person_ids:
             return build_page([], 0, page)
 
-    items, total = await appointment_repository.list_filtered(page, status=status, person_ids=person_ids)
+    items, total = await appointment_repository.list_filtered(
+        page,
+        status=status,
+        person_ids=person_ids,
+        date_from=ensure_utc(date_from) if date_from else None,
+        date_to=ensure_utc(date_to) if date_to else None,
+    )
     persons = await person_repository.get_many_by_ids({a.person_id for a in items})
     return build_page([_to_out(a, persons.get(a.person_id)) for a in items], total, page)
 

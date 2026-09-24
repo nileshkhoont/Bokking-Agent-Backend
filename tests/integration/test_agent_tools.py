@@ -834,3 +834,118 @@ async def test_inbound_call_has_no_schedule_so_phone_number_is_still_trusted(
     person = await Person.find_one(Person.phone_number == "+15551110099")
     assert person is not None
     assert str(person.id) == data["person_id"]
+
+
+@pytest.mark.asyncio
+async def test_log_callback_request_minutes_from_now_creates_person_requested_schedule(
+    client: AsyncClient, monkeypatch
+):
+    """"Call me in 5 minutes": the agent sends minutes_from_now (no clock math on its side) and a
+    pending call_schedules row is created for now+5min with the person-requested fields. Business
+    hours are stubbed open so this doesn't depend on the wall-clock time the suite runs at.
+    """
+    from app.schemas.appointment import SlotCheckResponse
+    from app.services.slot_service import slot_service
+
+    async def _open(_requested):
+        return SlotCheckResponse(available=True)
+
+    monkeypatch.setattr(slot_service, "check_callback_time_valid", _open)
+
+    await client.post(
+        "/api/v1/agent-tools/identify-person",
+        json={"phone_number": "+15554440000", "full_name": "Busy Person"},
+        headers=TOOL_HEADERS,
+    )
+    before = datetime.now(UTC)
+    response = await client.post(
+        "/api/v1/agent-tools/log-callback-request",
+        json={"phone_number": "+15554440000", "minutes_from_now": 5},
+        headers=TOOL_HEADERS,
+    )
+    body = response.json()
+    assert body["success"] is True
+
+    person = await Person.find_one(Person.phone_number == "+15554440000")
+    schedule = await CallSchedule.find_one(CallSchedule.person_id == str(person.id))
+    assert schedule.call_purpose == "person_requested_callback"
+    assert schedule.requested_by == "person"
+    assert schedule.status == "pending"
+    assert schedule.created_by is None
+    delta = schedule.scheduled_at - before
+    assert timedelta(minutes=4, seconds=50) <= delta <= timedelta(minutes=5, seconds=10)
+
+
+@pytest.mark.asyncio
+async def test_log_callback_request_needs_a_time(client: AsyncClient):
+    response = await client.post(
+        "/api/v1/agent-tools/log-callback-request",
+        json={"phone_number": "+15554440001"},
+        headers=TOOL_HEADERS,
+    )
+    assert response.json()["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_log_callback_request_past_time_error_includes_current_time(
+    client: AsyncClient, business_config: BusinessConfig
+):
+    await client.post(
+        "/api/v1/agent-tools/identify-person",
+        json={"phone_number": "+15554440002", "full_name": "Past Caller"},
+        headers=TOOL_HEADERS,
+    )
+    response = await client.post(
+        "/api/v1/agent-tools/log-callback-request",
+        json={
+            "phone_number": "+15554440002",
+            "requested_datetime": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+        },
+        headers=TOOL_HEADERS,
+    )
+    body = response.json()
+    assert body["success"] is False
+    assert "in the past" in body["message"]
+    assert "current time is" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_booking_source_follows_call_direction(client: AsyncClient, business_config: BusinessConfig):
+    """An appointment the agent books during a call WE placed (edesy_call_id matches a
+    call_schedules row) is "admin_scheduled_call"; one booked on an inbound call stays
+    "inbound_call". It used to be hardcoded "inbound_call" for both.
+    """
+    outbound_person = Person(phone_number="+15557770001", full_name="Outbound Person")
+    await outbound_person.insert()
+    await CallSchedule(
+        person_id=str(outbound_person.id),
+        scheduled_at=datetime.now(UTC),
+        call_purpose="admin_scheduled",
+        requested_by="admin",
+        status="in_progress",
+        edesy_call_id="sid-source-outbound",
+    ).insert()
+
+    out = await client.post(
+        "/api/v1/agent-tools/book-appointment",
+        json={
+            "phone_number": "+15557770001",
+            "edesy_call_id": "sid-source-outbound",
+            "requested_datetime": _next_monday_9am(),
+        },
+        headers=TOOL_HEADERS,
+    )
+    assert out.json()["success"] is True
+    assert (await Appointment.get(out.json()["data"]["appointment_id"])).booking_source == "admin_scheduled_call"
+
+    inbound = await client.post(
+        "/api/v1/agent-tools/book-appointment",
+        json={
+            "phone_number": "+15557770002",
+            "edesy_call_id": "sid-source-inbound",
+            "requested_datetime": _next_tuesday_10am(),
+        },
+        headers=TOOL_HEADERS,
+    )
+    assert inbound.json()["success"] is True
+    assert (await Appointment.get(inbound.json()["data"]["appointment_id"])).booking_source == "inbound_call"

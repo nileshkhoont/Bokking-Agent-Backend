@@ -21,6 +21,7 @@ class CallScheduleService:
         admin_id: str,
         appointment_id: str | None = None,
         admin_instructions: str | None = None,
+        notes: str | None = None,
     ) -> CallSchedule:
         schedule = CallSchedule(
             person_id=person_id,
@@ -29,6 +30,7 @@ class CallScheduleService:
             call_purpose=CallPurpose.admin_scheduled,
             requested_by=RequestedBy.admin,
             admin_instructions=admin_instructions,
+            notes=notes,
             status=CallScheduleStatus.pending,
             created_by=admin_id,
         )

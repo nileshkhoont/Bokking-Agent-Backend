@@ -54,6 +54,8 @@ class CallScheduleRepository:
         status: CallScheduleStatus | None = None,
         call_purpose: CallPurpose | None = None,
         person_ids: list[str] | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
     ) -> tuple[list[CallSchedule], int]:
         conditions: list = [CallSchedule.is_deleted == False]  # noqa: E712
         if status:
@@ -62,6 +64,13 @@ class CallScheduleRepository:
             conditions.append(CallSchedule.call_purpose == call_purpose)
         if person_ids is not None:
             conditions.append({"person_id": {"$in": person_ids}})
+        if date_from or date_to:
+            range_query: dict = {}
+            if date_from:
+                range_query["$gte"] = date_from
+            if date_to:
+                range_query["$lte"] = date_to
+            conditions.append({"scheduled_at": range_query})
 
         query = CallSchedule.find(*conditions)
         total = await query.count()

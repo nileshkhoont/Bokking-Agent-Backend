@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_admin, get_page_params
@@ -11,6 +13,7 @@ from app.repositories.person_repository import person_repository
 from app.schemas.call_schedule import CallScheduleCreate, CallScheduleOut
 from app.schemas.common import Page, PageParams
 from app.services.call_schedule_service import call_schedule_service
+from app.utils.datetime_utils import ensure_utc
 from app.utils.pagination import build_page
 
 router = APIRouter(prefix="/call-schedules", tags=["call_schedules"])
@@ -28,6 +31,7 @@ def _to_out(schedule: CallSchedule, person: Person | None = None) -> CallSchedul
         requested_by=schedule.requested_by,
         source_call_id=schedule.source_call_id,
         admin_instructions=schedule.admin_instructions,
+        notes=schedule.notes,
         status=schedule.status,
         created_by=schedule.created_by,
         edesy_call_id=schedule.edesy_call_id,
@@ -40,6 +44,8 @@ async def list_call_schedules(
     status: CallScheduleStatus | None = Query(default=None),
     call_purpose: CallPurpose | None = Query(default=None),
     q: str | None = Query(default=None, description="Search by person name or phone number"),
+    date_from: datetime | None = Query(default=None, description="scheduled_at >= (inclusive)"),
+    date_to: datetime | None = Query(default=None, description="scheduled_at <= (inclusive)"),
     page: PageParams = Depends(get_page_params),
     _: Admin = Depends(get_current_admin),
 ) -> Page[CallScheduleOut]:
@@ -51,7 +57,12 @@ async def list_call_schedules(
             return build_page([], 0, page)
 
     items, total = await call_schedule_repository.list_filtered(
-        page, status=status, call_purpose=call_purpose, person_ids=person_ids
+        page,
+        status=status,
+        call_purpose=call_purpose,
+        person_ids=person_ids,
+        date_from=ensure_utc(date_from) if date_from else None,
+        date_to=ensure_utc(date_to) if date_to else None,
     )
     persons = await person_repository.get_many_by_ids({s.person_id for s in items})
     return build_page([_to_out(s, persons.get(s.person_id)) for s in items], total, page)
@@ -75,6 +86,7 @@ async def create_call_schedule(
         admin_id=str(current.id),
         appointment_id=payload.appointment_id,
         admin_instructions=payload.admin_instructions,
+        notes=payload.notes,
     )
     return _to_out(schedule)
 

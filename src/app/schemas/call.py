@@ -43,7 +43,7 @@ class DashboardStats(BaseModel):
     outbound_calls: int
     admin_scheduled_calls: int
     agent_scheduled_calls: int
-    failed_calls: int
+    missed_calls: int
 
 
 class ToolResponse(BaseModel):
