@@ -15,6 +15,7 @@ class CallScheduleCreate(BaseModel):
     appointment_id: str | None = None
     scheduled_at: datetime
     admin_instructions: str | None = None
+    notes: str | None = None
 
 
 class CallScheduleOut(BaseModel):
@@ -28,6 +29,7 @@ class CallScheduleOut(BaseModel):
     requested_by: RequestedBy
     source_call_id: str | None = None
     admin_instructions: str | None = None
+    notes: str | None = None
     status: CallScheduleStatus
     created_by: str | None = None
     edesy_call_id: str | None = None

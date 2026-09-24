@@ -120,9 +120,35 @@ async def test_call_ended_for_outbound_schedule_marks_completed(client: AsyncCli
     call = await Call.find_one(Call.edesy_call_id == "sid-outbound-1")
     assert call.call_schedule_id == str(schedule.id)
     assert call.call_type == "outbound_admin_scheduled"
+    # Person picked up but asked for a callback (disposition CALLBACK_SCHEDULED) => "busy".
+    assert call.call_status == "busy"
 
     updated_schedule = await CallSchedule.get(schedule.id)
     assert updated_schedule.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_outbound_call_answered_normally_stays_answered(client: AsyncClient):
+    schedule = CallSchedule(
+        person_id="person-w",
+        scheduled_at=datetime.now(UTC),
+        call_purpose="admin_scheduled",
+        requested_by="admin",
+        status="in_progress",
+        edesy_call_id="sid-outbound-3",
+    )
+    await schedule.insert()
+
+    payload = _call_ended_payload(
+        call_sid="sid-outbound-3",
+        phone="+15550003333",
+        direction="outbound",
+        disposition="APPOINTMENT_BOOKED",
+    )
+    assert (await _post_webhook(client, payload)).status_code == 200
+
+    call = await Call.find_one(Call.edesy_call_id == "sid-outbound-3")
+    assert call.call_status == "answered"
 
 
 @pytest.mark.asyncio

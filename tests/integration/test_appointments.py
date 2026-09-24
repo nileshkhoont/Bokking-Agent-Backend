@@ -84,3 +84,44 @@ async def test_cancel_appointment(
     )
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_list_appointments_date_range_filter(client: AsyncClient, auth_headers: dict):
+    from app.models.appointment import Appointment
+
+    day = datetime(2031, 3, 10, tzinfo=UTC)
+    for offset_days, hour in ((0, 6), (0, 11), (1, 6)):
+        await Appointment(
+            person_id="p-range",
+            appointment_datetime=day + timedelta(days=offset_days, hours=hour),
+            status="booked",
+            booking_source="admin_scheduled_call",
+        ).insert()
+
+    def _params(**extra):
+        return {"page_size": 50, **extra}
+
+    everything = await client.get("/api/v1/appointments", params=_params(), headers=auth_headers)
+    assert everything.json()["total"] == 3
+
+    # Inclusive on both ends: the whole of Mar 10 (00:00 - 23:59:59) holds the two same-day rows.
+    one_day = await client.get(
+        "/api/v1/appointments",
+        params=_params(date_from="2031-03-10T00:00:00Z", date_to="2031-03-10T23:59:59.999Z"),
+        headers=auth_headers,
+    )
+    assert one_day.json()["total"] == 2
+
+    only_from = await client.get(
+        "/api/v1/appointments", params=_params(date_from="2031-03-11T00:00:00Z"), headers=auth_headers
+    )
+    assert only_from.json()["total"] == 1
+
+    # An offset-carrying bound is honoured too (IST midnight = 18:30Z the previous day).
+    ist_day = await client.get(
+        "/api/v1/appointments",
+        params=_params(date_from="2031-03-10T00:00:00+05:30", date_to="2031-03-10T23:59:59+05:30"),
+        headers=auth_headers,
+    )
+    assert ist_day.json()["total"] == 2

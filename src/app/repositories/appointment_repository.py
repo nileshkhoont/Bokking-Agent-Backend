@@ -93,12 +93,21 @@ class AppointmentRepository:
         page: PageParams,
         status: AppointmentStatus | None = None,
         person_ids: list[str] | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
     ) -> tuple[list[Appointment], int]:
         conditions: list = [Appointment.is_deleted == False]  # noqa: E712
         if status:
             conditions.append(Appointment.status == status)
         if person_ids is not None:
             conditions.append({"person_id": {"$in": person_ids}})
+        if date_from or date_to:
+            range_query: dict = {}
+            if date_from:
+                range_query["$gte"] = date_from
+            if date_to:
+                range_query["$lte"] = date_to
+            conditions.append({"appointment_datetime": range_query})
 
         query = Appointment.find(*conditions)
         total = await query.count()

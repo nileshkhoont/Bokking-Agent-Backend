@@ -1,3 +1,5 @@
+import re
+
 from beanie import PydanticObjectId
 
 from app.models.person import Person
@@ -69,7 +71,7 @@ class PersonRepository:
         if query:
             filter_query = Person.find(
                 Person.is_deleted == False,  # noqa: E712
-                {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": query}}]},
+                {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": re.escape(query)}}]},
             )
 
         total = await filter_query.count()
@@ -89,7 +91,7 @@ class PersonRepository:
         """
         persons = await Person.find(
             Person.is_deleted == False,  # noqa: E712
-            {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": query}}]},
+            {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": re.escape(query)}}]},
         ).to_list()
         return [str(p.id) for p in persons]
 

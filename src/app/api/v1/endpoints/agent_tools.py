@@ -10,7 +10,7 @@ branch to take, and no other tool covers that — so it's a necessary part of th
 architecture, not an invented feature.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from beanie import PydanticObjectId
@@ -389,11 +389,19 @@ async def book_appointment(payload: BookAppointmentRequest) -> ToolResponse:
     person = await _resolve_person_for_call(
         payload.phone_number, payload.edesy_call_id, payload.full_name
     )
+    # This tool is used on BOTH directions of call. A call we placed ourselves has a call_schedules
+    # row keyed by this edesy_call_id (written at dispatch time, before the call existed), so its
+    # presence is what marks the call as outbound — previously every appointment was hardcoded
+    # "inbound_call", even ones the agent booked during an admin-scheduled call.
+    booking_source = BookingSource.inbound_call
+    if payload.edesy_call_id and await call_schedule_repository.get_by_edesy_call_id(payload.edesy_call_id):
+        booking_source = BookingSource.admin_scheduled_call
+
     try:
         appointment = await appointment_service.book_first_time(
             person_id=str(person.id),
             appointment_datetime=payload.requested_datetime,
-            booking_source=BookingSource.inbound_call,
+            booking_source=booking_source,
             pending_edesy_call_id=payload.edesy_call_id,
         )
     except AppError as exc:
@@ -511,11 +519,27 @@ async def cancel_appointment(payload: CancelAppointmentRequest) -> ToolResponse:
     )
 
 
+def _blank_before_int(value: object) -> object:
+    """Optional integer tool field: Edesy/the LLM may send "", "none", "null" or the unrendered
+    token when it has nothing to say — normalise those to None before Pydantic's int parser.
+    """
+    if isinstance(value, str):
+        if is_unresolved_placeholder(value) or value.strip().lower() in {"", "none", "null"}:
+            return None
+    return value
+
+
 class LogCallbackRequest(BaseModel):
     # Same reasoning as BookAppointmentRequest.phone_number — resolved from Edesy's call context,
     # not trusted from the LLM.
     phone_number: RequiredToolStr
-    requested_datetime: datetime
+    # Either an absolute time (IST unless it carries an offset) OR minutes_from_now — for a
+    # relative request ("call me in 5 minutes") the agent must NOT do clock math itself: it has no
+    # reliable current time, and on 2026-09-23 it sent its own UTC "now + 5 min" as a naive time,
+    # which the backend (rightly) reads as IST -> "Requested time is in the past", so the callback
+    # was never scheduled. minutes_from_now is computed here from the server's real clock.
+    requested_datetime: Annotated[datetime | None, BeforeValidator(_strip_placeholder_before_datetime)] = None
+    minutes_from_now: Annotated[int | None, BeforeValidator(_blank_before_int)] = None
     # Optional — the agent has no way to know our internal calls._id mid-conversation (that
     # document doesn't exist until the call.ended webhook arrives, after the call is already
     # over; see integrations/edesy/webhook_events.py). Was required before 2026-09-17, which made
@@ -529,18 +553,36 @@ class LogCallbackRequest(BaseModel):
 
 @router.post("/log-callback-request", response_model=ToolResponse)
 async def log_callback_request(payload: LogCallbackRequest) -> ToolResponse:
+    if payload.minutes_from_now is not None:
+        if payload.minutes_from_now < 1:
+            return ToolResponse(success=False, message="minutes_from_now must be at least 1")
+        requested = datetime.now(UTC) + timedelta(minutes=payload.minutes_from_now)
+    elif payload.requested_datetime is not None:
+        requested = payload.requested_datetime
+    else:
+        return ToolResponse(
+            success=False,
+            message="Send either minutes_from_now (e.g. 5) or requested_datetime in IST",
+        )
+
     person = await _resolve_person_for_call(
         payload.phone_number, payload.edesy_call_id, payload.full_name
     )
     try:
         schedule = await callback_service.create_callback(
             person_id=str(person.id),
-            requested_datetime=payload.requested_datetime,
+            requested_datetime=requested,
             source_call_id=payload.source_call_id,
             appointment_id=payload.appointment_id,
         )
     except AppError as exc:
-        return ToolResponse(success=False, message=exc.message)
+        # Include the real current time so the agent can correct itself and retry in the same
+        # call instead of giving up (it has no trustworthy clock of its own).
+        return ToolResponse(
+            success=False,
+            message=f"{exc.message}. The current time is {format_ist_human(datetime.now(UTC))} — "
+            "times are IST; for a relative request send minutes_from_now instead.",
+        )
 
     return ToolResponse(
         success=True,

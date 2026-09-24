@@ -44,6 +44,19 @@ async def list_persons(
     return build_page([_to_out(p) for p in items], total, page)
 
 
+@router.get("/lookup", response_model=PersonOut | None)
+async def lookup_person_by_phone(
+    phone_number: str = Query(min_length=1, description="Exact phone number, e.g. +919876543210"),
+    _: Admin = Depends(get_current_admin),
+) -> PersonOut | None:
+    """Exact-match existence check (used for the live "this number already exists" hint when an
+    admin adds a person) — unlike the fuzzy `q` search above, it can't be fooled by partial or
+    text matches. Declared before /{person_id} so "lookup" isn't read as an id.
+    """
+    person = await person_repository.get_by_phone(phone_number.strip())
+    return _to_out(person) if person else None
+
+
 @router.get("/{person_id}", response_model=PersonOut)
 async def get_person(person_id: str, _: Admin = Depends(get_current_admin)) -> PersonOut:
     person = await person_repository.get_by_id(person_id)

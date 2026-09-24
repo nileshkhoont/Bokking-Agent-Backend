@@ -46,9 +46,15 @@ _FAILURE_KEYWORDS: dict[str, CallStatus] = {
 }
 
 
-def _map_call_status(outcome: OutcomeInfo | None) -> CallStatus:
+def _map_call_status(outcome: OutcomeInfo | None, is_outbound: bool = False) -> CallStatus:
     if outcome is None:
         return CallStatus.answered
+    # The person picked up an outbound call but couldn't talk ("I'm busy", "call me in 5 minutes",
+    # in any language) — the agent then ends the call with disposition CALLBACK_SCHEDULED (confirmed
+    # real value). That's a "busy" call, not an answered one. Inbound callback requests are not:
+    # there the person themselves called in.
+    if is_outbound and (outcome.disposition or "").strip().lower() == "callback_scheduled":
+        return CallStatus.busy
     if (outcome.status or "").strip().lower() == "completed":
         return CallStatus.answered
     for candidate in (outcome.status, outcome.endReason):
@@ -85,7 +91,8 @@ class CallService:
         # edesy_call_id is set there at dispatch time, independently of this webhook ever arriving.
         schedule = await call_schedule_repository.get_by_edesy_call_id(call_sid)
 
-        call_status = _map_call_status(event.outcome)
+        is_outbound = schedule is not None or (event.call.direction or "").lower() == "outbound"
+        call_status = _map_call_status(event.outcome, is_outbound)
         end_time = event.timestamp
         duration = event.call.duration
         start_time = end_time - timedelta(seconds=duration) if end_time and duration is not None else None
@@ -160,8 +167,12 @@ class CallService:
         if schedule:
             # No auto-retry on failure/no-answer — a missed schedule just stays missed; an admin
             # (or the person themselves, via a callback request) must schedule a new call.
+            # "busy" means the person DID pick up (and asked for a callback, which is logged as its
+            # own person_requested_callback schedule) — the scheduled call itself was completed.
             schedule.status = (
-                CallScheduleStatus.completed if call_status == CallStatus.answered else CallScheduleStatus.missed
+                CallScheduleStatus.completed
+                if call_status in (CallStatus.answered, CallStatus.busy)
+                else CallScheduleStatus.missed
             )
             await schedule.save()
 

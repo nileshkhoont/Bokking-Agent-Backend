@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_admin
-from app.core.constants import AppointmentStatus, CallStatus, CallType
+from app.core.constants import AppointmentStatus, CallScheduleStatus, CallType
 from app.models.admin import Admin
 from app.models.appointment import Appointment
 from app.models.call import Call
@@ -34,9 +34,10 @@ async def get_dashboard_stats(_: Admin = Depends(get_current_admin)) -> Dashboar
         CallSchedule.is_deleted == False,  # noqa: E712
         CallSchedule.call_purpose == "person_requested_callback",
     ).count()
-    failed = await Call.find(
-        Call.is_deleted == False,  # noqa: E712
-        {"call_status": {"$in": [CallStatus.failed.value, CallStatus.busy.value, CallStatus.no_answer.value]}},
+    # Scheduled calls that ended up "missed" — the same rows the admin's Schedule page lists under
+    # its Missed status (previously this tile counted Call rows with a failed/busy/no_answer status).
+    missed = await CallSchedule.find(
+        CallSchedule.is_deleted == False, CallSchedule.status == CallScheduleStatus.missed  # noqa: E712
     ).count()
 
     return DashboardStats(
@@ -46,5 +47,5 @@ async def get_dashboard_stats(_: Admin = Depends(get_current_admin)) -> Dashboar
         outbound_calls=outbound,
         admin_scheduled_calls=admin_scheduled,
         agent_scheduled_calls=agent_scheduled,
-        failed_calls=failed,
+        missed_calls=missed,
     )
