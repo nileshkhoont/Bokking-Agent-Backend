@@ -4,7 +4,7 @@ from beanie import PydanticObjectId
 
 from app.models.person import Person
 from app.schemas.common import PageParams
-from app.utils.validators import strip_unresolved_placeholder
+from app.utils.validators import normalize_phone_number, strip_unresolved_placeholder
 
 
 class PersonRepository:
@@ -29,8 +29,14 @@ class PersonRepository:
         return {str(p.id): p for p in persons}
 
     async def get_by_phone(self, phone_number: str) -> Person | None:
+        """Normalizes before the exact-match lookup — Edesy has been observed sending the same
+        real caller's number both as "+917600181441" and, on a different call, as "7600181441"
+        (see normalize_phone_number's docstring), and this is an exact Person.phone_number
+        comparison, so an unnormalized query would silently miss the existing record.
+        """
         return await Person.find_one(
-            Person.phone_number == phone_number, Person.is_deleted == False  # noqa: E712
+            Person.phone_number == normalize_phone_number(phone_number),
+            Person.is_deleted == False,  # noqa: E712
         )
 
     async def apply_name_if_given(self, person: Person, full_name: str | None) -> Person:
@@ -56,6 +62,7 @@ class PersonRepository:
         name yet, so a placeholder is used until the agent's identify_person tool call updates
         it) and by that identify_person tool itself.
         """
+        phone_number = normalize_phone_number(phone_number)
         existing = await self.get_by_phone(phone_number)
         if existing:
             return await self.apply_name_if_given(existing, full_name)

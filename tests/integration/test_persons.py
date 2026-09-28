@@ -154,3 +154,45 @@ async def test_call_schedule_notes_are_saved_returned_and_not_sent_to_the_agent(
     )
     assert old_style.json()["notes"] is None
     assert old_style.json()["admin_instructions"] == "Discuss reports"
+
+
+@pytest.mark.asyncio
+async def test_bare_and_plus91_phone_formats_resolve_to_the_same_person(
+    client: AsyncClient, auth_headers: dict
+):
+    """Regression test for the 2026-09-25 incident: the same real caller (+917600181441, "Harsh")
+    called in on a webhook that reported the number without a country code ("7600181441"), and an
+    exact-match lookup treated it as a brand-new person ("Mahesh"), forking one real person into
+    two Person records that then accumulated separate calls/appointments.
+    """
+    from app.repositories.person_repository import person_repository
+
+    created = await client.post(
+        "/api/v1/persons", json={"full_name": "Harsh", "phone_number": "+917600181441"}, headers=auth_headers
+    )
+    assert created.status_code == 201
+    person_id = created.json()["id"]
+
+    # get_or_create_by_phone is what the inbound-call webhook and identify_person actually call —
+    # a bare-digit arrival must resolve to the SAME person, never create a second one. (Whether
+    # the name gets updated is apply_name_if_given's own, separate, documented behavior — not
+    # what this regression test is about.)
+    resolved = await person_repository.get_or_create_by_phone("7600181441", full_name="Mahesh")
+    assert str(resolved.id) == person_id
+
+    total_people = await client.get(
+        "/api/v1/persons", params={"q": "7600181441", "page_size": 50}, headers=auth_headers
+    )
+    assert total_people.json()["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_created_person_phone_is_normalized(client: AsyncClient, auth_headers: dict):
+    created = await client.post(
+        "/api/v1/persons",
+        json={"full_name": "Bare Digits", "phone_number": "9876543210", "alternate_phone": "9876500000"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["phone_number"] == "+919876543210"
+    assert created.json()["alternate_phone"] == "+919876500000"

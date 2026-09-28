@@ -24,3 +24,29 @@ def is_unresolved_placeholder(value: str | None) -> bool:
 def strip_unresolved_placeholder(value: str | None) -> str | None:
     """Collapse an unsubstituted `{{token}}` down to None so it's treated as "not provided"."""
     return None if is_unresolved_placeholder(value) else value
+
+
+def normalize_phone_number(raw: str) -> str:
+    """Assumes India (+91) for a bare 10-digit number — every domestic caller/admin-entered
+    number this business handles — and otherwise leaves the value alone. Never guesses a country
+    code for a number that already has a '+' or doesn't look like a plain 10-digit Indian mobile
+    number, so a genuine foreign (NRI) number is never mangled into a fake +91 one.
+
+    Fixes a real 2026-09-25 incident: the same person (Person 6ab0c5c6..., "+917600181441",
+    "Harsh") called in and Edesy's call.phone_number arrived as "7600181441" (no country code) on
+    that particular call. An exact-string-match lookup treated it as a brand-new number and
+    created a second Person ("Mahesh") for the same real phone. Called from every place a phone
+    number is used to look up or create a Person (person_repository.get_by_phone /
+    get_or_create_by_phone, and PersonCreate/PersonUpdate) so "+917600181441" and "7600181441"
+    are always the same stored value going forward.
+    """
+    cleaned = re.sub(r"[\s\-()]", "", raw)
+    if not cleaned:
+        return raw
+    if cleaned.startswith("+"):
+        return cleaned
+    if re.match(r"^\d{10}$", cleaned):
+        return f"+91{cleaned}"
+    if re.match(r"^91\d{10}$", cleaned):
+        return f"+{cleaned}"
+    return cleaned
