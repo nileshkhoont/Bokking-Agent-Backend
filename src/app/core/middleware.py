@@ -15,6 +15,9 @@ def register_middleware(app: FastAPI) -> None:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        # Dev convenience only (see cors_origin_regex_dev's docstring in core/config.py) — kept
+        # out of production so CORS there stays exactly the explicit cors_origins list.
+        allow_origin_regex=settings.cors_origin_regex_dev if settings.environment == "development" else None,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
