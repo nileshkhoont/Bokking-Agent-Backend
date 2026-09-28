@@ -11,6 +11,18 @@ class Settings(BaseSettings):
     # file watcher, etc.) are always capped at WARNING regardless of this — see core/logging.py.
     log_level: str = "INFO"
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # Dev-only: lets the frontend be reached from another device on the same LAN (e.g. testing
+    # on a phone via http://192.168.x.x:3000) without hardcoding that machine's IP into
+    # cors_origins above — which would break again the next time DHCP hands out a different one.
+    # Matches http://<private-network IP>:<any port> only; never applied outside development
+    # (see register_middleware in core/middleware.py), so production CORS stays the explicit
+    # cors_origins list above.
+    cors_origin_regex_dev: str = (
+        r"^http://(localhost|127\.0\.0\.1"
+        r"|192\.168\.\d{1,3}\.\d{1,3}"
+        r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+        r"|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}):\d+$"
+    )
     # Publicly reachable base URL for THIS backend — Edesy's servers call agent_tools/webhooks
     # endpoints here, so in any real deployment this must be a public HTTPS URL, not localhost.
     public_base_url: str = "http://localhost:5000"
