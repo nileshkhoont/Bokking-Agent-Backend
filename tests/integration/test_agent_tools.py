@@ -693,9 +693,14 @@ async def test_reschedule_appointment_id_alone_is_never_trusted_with_multiple_up
 
 
 @pytest.mark.asyncio
-async def test_log_callback_request_rejects_outside_business_hours(
+async def test_log_callback_request_succeeds_outside_business_hours(
     client: AsyncClient, business_config: BusinessConfig
 ):
+    """A callback is the AI calling the person back — not a clinic visit — so it must be
+    schedulable regardless of business_config's working days/hours/holidays. A caller who says
+    "call me back at 11pm" or "call me back tomorrow" (a closed day) must not be refused just
+    because the clinic itself wouldn't be open at that time.
+    """
     await client.post(
         "/api/v1/agent-tools/identify-person",
         json={"phone_number": "+15553330000", "full_name": "Callback Caller"},
@@ -711,6 +716,33 @@ async def test_log_callback_request_rejects_outside_business_hours(
             "phone_number": "+15553330000",
             "requested_datetime": late_night.isoformat(),
             "source_call_id": "call-1",
+        },
+        headers=TOOL_HEADERS,
+    )
+    assert response.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_log_callback_request_still_rejects_a_past_time(
+    client: AsyncClient, business_config: BusinessConfig
+):
+    """The one thing still validated — a callback can't be scheduled for a time that's already
+    passed — is unrelated to business_config and stays enforced.
+    """
+    await client.post(
+        "/api/v1/agent-tools/identify-person",
+        json={"phone_number": "+15553330001", "full_name": "Past Callback Caller"},
+        headers=TOOL_HEADERS,
+    )
+
+    past = datetime.now(UTC) - timedelta(hours=1)
+
+    response = await client.post(
+        "/api/v1/agent-tools/log-callback-request",
+        json={
+            "phone_number": "+15553330001",
+            "requested_datetime": past.isoformat(),
+            "source_call_id": "call-2",
         },
         headers=TOOL_HEADERS,
     )

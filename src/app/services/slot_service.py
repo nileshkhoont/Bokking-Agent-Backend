@@ -237,13 +237,19 @@ class SlotService:
         )
 
     async def check_callback_time_valid(self, requested_datetime: datetime) -> SlotCheckResponse:
-        """Validates a person-requested callback datetime — working days/hours/holidays/max
-        advance window only, no appointment-slot alignment or double-booking check (a callback
-        isn't an appointment).
+        """Validates a person-requested callback datetime — only that it isn't in the past.
+
+        A callback is the AI calling the person back on the phone, not a clinic visit, so unlike
+        an appointment slot it is deliberately NEVER gated by working days/hours/holidays/
+        max-advance-window — those all come from business_config and describe when the *clinic*
+        is open, which has no bearing on when an outbound phone call can happen. A caller asking
+        "call me back in 5 minutes" must be schedulable even if that falls outside business hours
+        or on a day the clinic is closed.
         """
-        config = await self._get_config()
         requested_utc = ensure_utc(requested_datetime)
-        return await self._check_business_hours(config, requested_utc, require_slot_alignment=False)
+        if requested_utc <= datetime.now(UTC):
+            return SlotCheckResponse(available=False, reason="Requested time is in the past")
+        return SlotCheckResponse(available=True)
 
 
 slot_service = SlotService()
