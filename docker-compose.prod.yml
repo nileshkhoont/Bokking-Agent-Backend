@@ -18,11 +18,11 @@ services:
       # across files and hoping the merge does what you'd expect.
       - "127.0.0.1:${API_HOST_PORT:-5000}:5000"
     env_file: .env
-    # NOTE: `deploy.replicas` is a Docker Swarm construct — plain `docker compose up` (what
-    # DEPLOYMENT.md uses) silently ignores this and runs exactly 1 container, not 2. See
-    # DEPLOYMENT.md Step 3.6 for what that does and doesn't mean for you.
-    deploy:
-      replicas: 2
+    # No `deploy.replicas` here on purpose. A single published host port (API_HOST_PORT above)
+    # can only ever be bound by one container at a time — a second replica trying to bind the
+    # same port fails outright ("port is already allocated"), it doesn't queue or load-balance.
+    # Real horizontal scaling needs either Docker Swarm/Kubernetes, or removing the fixed host
+    # port and load-balancing across instances at the Nginx layer — both out of scope here.
 
   celery_worker:
     build: .
