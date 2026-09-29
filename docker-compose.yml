@@ -1,25 +1,62 @@
+# Explicit project name, driven by .env's COMPOSE_PROJECT_NAME — this is what actually keeps
+# multiple deployments of this same repo isolated from each other on one VPS (one per hospital,
+# see DEPLOYMENT.md's "Deploying Additional Hospitals" section): it namespaces every container,
+# network, and named volume below (e.g. the "mongo_data" volume really becomes
+# "<project name>_mongo_data" on disk), so two deployments never collide even if Compose's usual
+# directory-name-based default ever landed on the same name by coincidence. Defaults to
+# "ai-calling-agent" so a single-deployment setup needs zero extra config.
+name: ${COMPOSE_PROJECT_NAME:-ai-calling-agent}
+
 services:
+  # Bound to 127.0.0.1 only, not 0.0.0.0 — a bare "27017:27017" publishes Mongo to every
+  # interface, including the public one; anyone on the internet who finds an unauthenticated
+  # Mongo port can read/wipe the whole database (this is a real, common ransomware vector, not a
+  # theoretical one). Binding to loopback means only this host can reach it — the app containers
+  # still reach it fine, over the internal Docker network, by service name ("mongo"), which never
+  # goes through this published port at all.
+  #
+  # The host-side port itself (MONGO_HOST_PORT) is configurable, defaulting to Mongo's standard
+  # 27017 — only needs overriding in .env when running a second deployment of this repo on the
+  # same VPS, so its published port doesn't collide with the first one's. The container-internal
+  # port (the second 27017) never changes — that's what other containers connect to, over the
+  # Docker network, regardless of what's published to the host.
   mongo:
     image: mongo:7
     ports:
-      - "27017:27017"
+      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:27017"
+    environment:
+      # Bootstraps a root/admin account the FIRST time this runs against an empty volume only —
+      # see DEPLOYMENT.md's self-hosted MongoDB section for creating the actual app user the
+      # running API uses day to day (least-privilege, not root).
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     volumes:
       - mongo_data:/data/db
 
+  # Same reasoning as mongo above — Redis has no auth configured at all, so it must never be
+  # reachable from outside this host either. REDIS_HOST_PORT is the same kind of per-deployment
+  # override as MONGO_HOST_PORT above.
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
 
-  # MONGODB_URI is intentionally NOT overridden here — it comes from .env (MongoDB Atlas), the
-  # same database the API (run directly on the host via uvicorn) and the admin dashboard use.
-  # Overriding it per-service to point at local/container-only Mongo instances was the root cause
-  # of scheduled calls silently never dispatching: the schedule got created in Atlas, but the
-  # worker was polling an empty local database and never saw it.
+  # MONGODB_URI comes straight from .env for every service below (via env_file), not overridden
+  # per-service here — unlike Redis, there's no "wrong by default" value to fix: DEPLOYMENT.md has
+  # you write the correct value (Atlas, or mongodb://...@mongo:27017/... for the self-hosted
+  # container above) directly into .env, so plain pass-through is correct as-is. Getting this
+  # wrong once already caused scheduled calls to silently never dispatch (schedule created in one
+  # database, worker polling a different, empty one) — if you ever add a MONGODB_URI override
+  # here "just for this service," you are very likely reintroducing that exact bug.
   api:
     build: .
     ports:
-      - "5000:5000"
+      # Loopback-only, same reasoning as mongo/redis/flower above — Nginx (Step 4 of
+      # DEPLOYMENT.md) runs on this same host and reaches it over 127.0.0.1 fine; nothing outside
+      # this machine needs to hit this port directly, ever. API_HOST_PORT is the per-deployment
+      # override (see mongo's comment above) — each hospital's Nginx site then points at its own
+      # deployment's chosen port.
+      - "127.0.0.1:${API_HOST_PORT:-5000}:5000"
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -27,10 +64,11 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       - redis
+      - mongo
 
-  # Run with: docker compose up -d --build redis celery_worker celery_beat flower
-  # (deliberately not `docker compose up -d` alone, which would also start the unused `mongo`
-  # container below — kept only as an opt-in local fallback, nothing points at it by default).
+  # Run with: docker compose up -d --build mongo redis celery_worker celery_beat flower
+  # (deliberately not `docker compose up -d` alone — see flower's own note below for why that
+  # matters for it specifically; naming services is just good habit otherwise).
   celery_worker:
     build: .
     command: celery -A app.workers.celery_app worker -l info
@@ -41,6 +79,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       - redis
+      - mongo
 
   celery_beat:
     build: .
@@ -52,13 +91,18 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       - redis
+      - mongo
 
-  # Queue dashboard — http://localhost:5555. Only needs the Redis broker, no MongoDB access.
+  # Queue dashboard — http://localhost:5555 (or FLOWER_HOST_PORT, for a second deployment on the
+  # same VPS). Only needs the Redis broker, no MongoDB access. Has no authentication of its own,
+  # so this is loopback-only too, same reasoning as mongo/redis above — reach it from your own
+  # machine via SSH port-forwarding (see DEPLOYMENT.md), never by opening this port in the
+  # firewall or proxying it publicly through Nginx.
   flower:
     build: .
     command: celery -A app.workers.celery_app flower --port=5555
     ports:
-      - "5555:5555"
+      - "127.0.0.1:${FLOWER_HOST_PORT:-5555}:5555"
     env_file: .env
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
