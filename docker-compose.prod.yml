@@ -1,27 +1,46 @@
+# Explicit image tag, derived from COMPOSE_PROJECT_NAME rather than a fixed name — with a fixed
+# tag like "ai-calling-agent-backend:latest", two separate deployments of this repo on the same
+# VPS (one per hospital) would silently overwrite each other's built image every time either one
+# ran `docker compose build`, since plain Docker image tags aren't namespaced per Compose project
+# the way containers/networks/volumes are. Tying it to the same project name that already keeps
+# everything else isolated (see docker-compose.yml's own comment) fixes that for free.
+x-image: &image ${COMPOSE_PROJECT_NAME:-ai-calling-agent}-backend:latest
+
 services:
   api:
     build: .
-    image: ai-calling-agent-backend:latest
+    image: *image
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      # Must exactly match docker-compose.yml's own port entry for this service — when both
+      # files are merged (see DEPLOYMENT.md), keeping them identical avoids any ambiguity about
+      # which one Compose applies, rather than declaring two different values for the same field
+      # across files and hoping the merge does what you'd expect.
+      - "127.0.0.1:${API_HOST_PORT:-5000}:5000"
     env_file: .env
+    # NOTE: `deploy.replicas` is a Docker Swarm construct — plain `docker compose up` (what
+    # DEPLOYMENT.md uses) silently ignores this and runs exactly 1 container, not 2. See
+    # DEPLOYMENT.md Step 3.6 for what that does and doesn't mean for you.
     deploy:
       replicas: 2
 
   celery_worker:
     build: .
-    image: ai-calling-agent-backend:latest
+    image: *image
     command: celery -A app.workers.celery_app worker -l info --concurrency=4
     restart: unless-stopped
     env_file: .env
 
   celery_beat:
     build: .
-    image: ai-calling-agent-backend:latest
+    image: *image
     command: celery -A app.workers.celery_app beat -l info
     restart: unless-stopped
     env_file: .env
 
-# mongo/redis are expected to be managed services (Atlas / Elasticache-equivalent) in production,
-# not containers in this compose file — point MONGODB_URI / REDIS_URL in .env at them.
+# mongo and redis themselves aren't redeclared in this file — they come from docker-compose.yml's
+# own service definitions (self-hosted, with an auth-enabled Mongo and a loopback-only-published
+# port on both — see that file's comments), merged in via the two-file command in DEPLOYMENT.md.
+# If you'd rather use a managed database (MongoDB Atlas, a managed Redis) instead of hosting them
+# on this VPS, just point MONGODB_URI / REDIS_URL in .env at that managed service and drop "mongo"
+# / "redis" from the service list in the `up -d` command — everything else here is unaffected.
