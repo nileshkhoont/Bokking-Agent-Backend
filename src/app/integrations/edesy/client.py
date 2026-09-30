@@ -100,10 +100,12 @@ class EdesyClient:
         idempotency_key: str,
         variables: dict | None = None,
         callback_url: str | None = None,
+        from_number: str | None = None,
     ) -> EdesyPlaceCallResponse:
         payload = EdesyPlaceCallRequest(
             agentId=agent_id,
             phoneNumber=phone_number,
+            fromNumber=from_number,
             context=context,
             variables=variables or {},
             callbackUrl=callback_url,

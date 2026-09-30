@@ -29,6 +29,12 @@ class EdesyAgentResponse(BaseModel):
 class EdesyPlaceCallRequest(BaseModel):
     agentId: str
     phoneNumber: str
+    # Caller ID this call is placed FROM (E.164) — confirmed via Edesy's own docs
+    # (edesy.in/docs/voice-agent/api/trigger-call) as "Caller ID / from number. If not provided,
+    # uses the default number for your workspace." Always sent (see Settings.edesy_from_number's
+    # docstring) rather than omitted, since that documented fallback was observed live to resolve
+    # to the wrong (trial) number.
+    fromNumber: str | None = None
     context: dict[str, Any] = {}
     # Dashboard-level {{variable}} prompt substitution (Agent Instructions -> Variables). Field
     # name "variables" is inferred from the dashboard's own terminology, not confirmed against

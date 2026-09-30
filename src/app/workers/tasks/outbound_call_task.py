@@ -30,6 +30,17 @@ async def dispatch_due_calls_once() -> int:
     if not settings.edesy_agent_id:
         logger.warning("outbound_call_task_skipped", reason="EDESY_AGENT_ID not configured")
         return 0
+    # EDESY_FROM_NUMBER is intentionally optional, not a dispatch-blocking requirement: when unset,
+    # from_number below is None, EdesyPlaceCallRequest.fromNumber is omitted from the request body,
+    # and Edesy falls back to its own account-level default number rather than the call failing to
+    # go out at all. Set it explicitly whenever possible though — see Settings.edesy_from_number's
+    # docstring for why that default was root-caused (2026-09-30) to resolve to the free trial
+    # number instead of the hospital's actual purchased number on at least one real account.
+    if not settings.edesy_from_number:
+        logger.warning(
+            "outbound_call_edesy_from_number_not_configured",
+            note="Falling back to Edesy's own default number for this dispatch batch.",
+        )
 
     dispatched = 0
     due = await call_schedule_repository.list_due(datetime.now(UTC))
@@ -65,6 +76,7 @@ async def dispatch_due_calls_once() -> int:
             result = await edesy_client.place_call(
                 agent_id=settings.edesy_agent_id,
                 phone_number=person.phone_number,
+                from_number=settings.edesy_from_number,
                 context=context,
                 variables=variables,
                 idempotency_key=str(schedule.id),
