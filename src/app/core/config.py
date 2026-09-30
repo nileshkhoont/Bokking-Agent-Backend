@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     edesy_api_key: str | None = None
     edesy_webhook_secret: str | None = None
     edesy_agent_id: str | None = None
+    # Caller ID (E.164, e.g. "+919876543210") for every outbound call — sent as Edesy's own
+    # `fromNumber` field on POST /api/v1/calls. Optional: when unset, outbound_call_task.py omits
+    # it and Edesy falls back to its own account-level default number, so a missing value never
+    # blocks calls from going out — it's a graceful fallback, not a hard requirement. Strongly
+    # recommended to set it anyway: leaving it unset was root-caused (2026-09-30) to Edesy silently
+    # placing outbound calls from the free trial number shown on the Phone Numbers dashboard page —
+    # NOT the hospital's actual purchased number — despite that purchased number being marked
+    # "default" elsewhere in the same dashboard. Setting this explicitly is what makes the calling
+    # number deterministic and under our control instead of depending on Edesy's own
+    # (observed-unreliable) default resolution.
+    edesy_from_number: str | None = None
 
     # Shared secret Edesy's agent_tools calls must present (not an admin JWT)
     agent_tool_secret: str
