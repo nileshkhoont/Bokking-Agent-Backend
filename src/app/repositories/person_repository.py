@@ -73,12 +73,28 @@ class PersonRepository:
         await person.insert()
         return person
 
+    @staticmethod
+    def _name_or_phone_filter(query: str) -> dict:
+        """Case-insensitive substring match on full_name OR phone_number — deliberately plain
+        $regex, not $text: $text does whole-word/stemmed matching only ("Harsh" matches, "Har"
+        does not), which made the admin search bars across Calls/Appointments/Schedule feel dead
+        until a full name was typed (2026-10-01). $regex with no anchors matches live, on every
+        keystroke, anywhere in the name — same substring behavior phone_number already had.
+        """
+        escaped = re.escape(query)
+        return {
+            "$or": [
+                {"full_name": {"$regex": escaped, "$options": "i"}},
+                {"phone_number": {"$regex": escaped}},
+            ]
+        }
+
     async def search(self, query: str | None, page: PageParams) -> tuple[list[Person], int]:
         filter_query = Person.find(Person.is_deleted == False)  # noqa: E712
         if query:
             filter_query = Person.find(
                 Person.is_deleted == False,  # noqa: E712
-                {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": re.escape(query)}}]},
+                self._name_or_phone_filter(query),
             )
 
         total = await filter_query.count()
@@ -91,14 +107,14 @@ class PersonRepository:
         return items, total
 
     async def find_ids_matching(self, query: str) -> list[str]:
-        """Same $text/regex match as search() above, but returns every matching id unpaginated —
-        used by the calls/appointments/call-schedules list endpoints to search "by person" (they
-        only store person_id, not a denormalized name/phone) by first resolving the query to a
-        set of person ids and then filtering their own collection with {"person_id": {"$in": ...}}.
+        """Same regex match as search() above, but returns every matching id unpaginated — used
+        by the calls/appointments/call-schedules list endpoints to search "by person" (they only
+        store person_id, not a denormalized name/phone) by first resolving the query to a set of
+        person ids and then filtering their own collection with {"person_id": {"$in": ...}}.
         """
         persons = await Person.find(
             Person.is_deleted == False,  # noqa: E712
-            {"$or": [{"$text": {"$search": query}}, {"phone_number": {"$regex": re.escape(query)}}]},
+            self._name_or_phone_filter(query),
         ).to_list()
         return [str(p.id) for p in persons]
 

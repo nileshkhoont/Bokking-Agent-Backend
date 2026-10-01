@@ -69,6 +69,27 @@ async def test_search_with_plus_sign_in_phone_does_not_error(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_search_matches_name_prefix_live_as_typed(client: AsyncClient, auth_headers: dict):
+    """2026-10-01: name search used Mongo's $text operator, which only matches whole/stemmed
+    words — "Har" would not match "Harsh" until the full word was typed, making the Calls/
+    Appointments/Schedule/Persons search bars feel unresponsive while typing. Switched to a plain
+    case-insensitive $regex substring match (same approach phone_number already used).
+    """
+    await client.post(
+        "/api/v1/persons", json={"full_name": "Harsh Jagani", "phone_number": "+15559990001"}, headers=auth_headers
+    )
+
+    prefix = await client.get("/api/v1/persons", params={"q": "Har"}, headers=auth_headers)
+    assert prefix.status_code == 200
+    assert prefix.json()["total"] == 1
+
+    # Case-insensitive too, and matches anywhere in the name, not just a leading prefix.
+    midword = await client.get("/api/v1/persons", params={"q": "agan"}, headers=auth_headers)
+    assert midword.status_code == 200
+    assert midword.json()["total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_dashboard_missed_calls_counts_missed_schedules(client: AsyncClient, auth_headers: dict):
     from datetime import UTC, datetime
 
