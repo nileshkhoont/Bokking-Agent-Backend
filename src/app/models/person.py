@@ -1,6 +1,5 @@
 from datetime import datetime
 
-import pymongo
 from beanie import Indexed
 from pydantic import BaseModel
 
@@ -28,6 +27,9 @@ class Person(TimestampedDocument):
 
     class Settings(TimestampedDocument.Settings):
         name = "persons"
-        indexes = [
-            pymongo.IndexModel([("full_name", pymongo.TEXT)]),
-        ]
+        # No longer indexed on full_name: search (person_repository.py's _name_or_phone_filter)
+        # switched from a $text query (which needed this TEXT index, and only matched whole
+        # words) to a plain $regex substring match, which doesn't use an index either way. Any
+        # existing deployed database still physically has this index — Beanie's init_beanie here
+        # isn't given allow_index_dropping=True, so it was never auto-dropped — it's just unused
+        # dead weight now; drop it manually (db.persons.dropIndex("full_name_text")) if desired.
