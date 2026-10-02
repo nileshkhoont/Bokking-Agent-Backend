@@ -75,6 +75,11 @@ class OutcomeInfo(BaseModel):
     confidence: float | None = None
     endReason: str | None = None  # e.g. "USER_REQUEST", "NO_ANSWER", "BUSY"
     endedBy: str | None = None
+    # See CallEndedEvent.resolved_call_summary()'s docstring — same uncertainty, same reasoning,
+    # just in case Edesy nests it under outcome rather than at the top level.
+    callSummary: str | None = None
+    call_summary: str | None = None
+    summary: str | None = None
 
 
 class TranscriptTurnPayload(BaseModel):
@@ -93,6 +98,37 @@ class CallEndedEvent(BaseModel):
     outcome: OutcomeInfo | None = None
     data: dict[str, Any] | None = None
     transcript: list[TranscriptTurnPayload] = []
+    # The human-readable summary the agent passed as the `call_summary` argument to Edesy's own
+    # end_call function (e.g. "Caller booked an appointment for neck pain on Oct 3rd at 12 PM
+    # under the name Shivam.") — confirmed to exist (it's shown on Edesy's own dashboard, in a
+    # "Call Summary" card), but its exact key/location in this webhook has NEVER been directly
+    # observed: our handler only logs the raw payload on a parse FAILURE, and an extra/missing
+    # field here never fails the parse either way (2026-10-02). Every plausible name/location is
+    # declared here and on OutcomeInfo above rather than guessed at a single one — see
+    # resolved_call_summary() below for how the real value gets picked out. Once
+    # edesy_call_summary_resolved's "key_path" shows up for a real call in the logs, narrow this
+    # down to just that one field and delete the others.
+    callSummary: str | None = None
+    call_summary: str | None = None
+    summary: str | None = None
+
+    def resolved_call_summary(self) -> str | None:
+        """First non-empty candidate across every plausible name/location — see this class's
+        own docstring for why there's more than one.
+        """
+        outcome = self.outcome
+        candidates = (
+            self.call_summary,
+            self.callSummary,
+            self.summary,
+            outcome.call_summary if outcome else None,
+            outcome.callSummary if outcome else None,
+            outcome.summary if outcome else None,
+            (self.data or {}).get("call_summary"),
+            (self.data or {}).get("callSummary"),
+            (self.data or {}).get("summary"),
+        )
+        return next((c for c in candidates if c), None)
 
 
 def parse_webhook_event(payload: dict[str, Any]) -> CallEndedEvent | None:
