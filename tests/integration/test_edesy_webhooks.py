@@ -35,8 +35,9 @@ def _call_ended_payload(
     disposition: str | None = "CALLBACK_SCHEDULED",
     end_reason: str = "USER_REQUEST",
     direction: str = "inbound",
+    call_summary: str | None = None,
 ) -> dict:
-    return {
+    payload = {
         "event": "call.ended",
         "timestamp": datetime.now(UTC).isoformat(),
         "call": {
@@ -64,6 +65,12 @@ def _call_ended_payload(
             {"speaker": "user", "text": "Call me back in 5 minutes.", "timestamp": datetime.now(UTC).isoformat()},
         ],
     }
+    if call_summary is not None:
+        # Top-level, matching Edesy's own end_call tool argument name — the exact real key/
+        # location is unconfirmed (see CallEndedEvent.resolved_call_summary()'s docstring), this
+        # is just the most likely one to test against.
+        payload["call_summary"] = call_summary
+    return payload
 
 
 @pytest.mark.asyncio
@@ -99,6 +106,28 @@ async def test_call_ended_inbound_creates_person_and_call(client: AsyncClient):
     person = await Person.find_one(Person.phone_number == "+15551234567")
     assert person is not None
     assert str(person.id) == call.person_id
+
+
+@pytest.mark.asyncio
+async def test_call_ended_stores_real_call_summary_over_synthesized_fallback(client: AsyncClient):
+    """2026-10-02: transcript_summary was always the synthesized "DISPOSITION (end reason)"
+    placeholder, even when Edesy's end_call tool call carried a real human-readable summary (shown
+    on Edesy's own dashboard) — it was simply never read. The real one must now win.
+    """
+    payload = _call_ended_payload(
+        call_sid="sid-with-summary",
+        phone="+15559876543",
+        disposition="APPOINTMENT_BOOKED",
+        call_summary="Caller booked an appointment for neck pain on Oct 3rd at 12 PM under the name Shivam.",
+    )
+    response = await _post_webhook(client, payload)
+    assert response.status_code == 200
+
+    call = await Call.find_one(Call.edesy_call_id == "sid-with-summary")
+    assert call is not None
+    assert call.transcript_summary == (
+        "Caller booked an appointment for neck pain on Oct 3rd at 12 PM under the name Shivam."
+    )
 
 
 @pytest.mark.asyncio

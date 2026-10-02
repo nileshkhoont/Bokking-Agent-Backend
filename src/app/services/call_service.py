@@ -98,8 +98,14 @@ class CallService:
         start_time = end_time - timedelta(seconds=duration) if end_time and duration is not None else None
 
         transcript_text = "\n".join(f"{t.speaker}: {t.text}" for t in event.transcript) or None
-        transcript_summary = None
-        if event.outcome and (event.outcome.disposition or event.outcome.endReason):
+        # Prefer the real, human-readable summary the agent gave end_call (see
+        # CallEndedEvent.resolved_call_summary()'s docstring) — only fall back to the synthesized
+        # "DISPOSITION (end reason)" placeholder for calls that genuinely never got one (e.g. a
+        # no-answer/voicemail call never reaches end_call with a summary at all).
+        real_call_summary = event.resolved_call_summary()
+        logger.info("edesy_call_summary_resolved" if real_call_summary else "edesy_call_summary_missing", call_sid=call_sid)
+        transcript_summary = real_call_summary
+        if transcript_summary is None and event.outcome and (event.outcome.disposition or event.outcome.endReason):
             transcript_summary = (
                 f"{event.outcome.disposition or 'Unknown outcome'} ({event.outcome.endReason or 'n/a'})"
             )
